@@ -87,6 +87,83 @@ struct DoLoopConversion : public OpRewritePattern<fir::DoLoopOp> {
     return success();
   }
 };
+struct ResultConversion : public OpRewritePattern<fir::ResultOp> {
+  using OpRewritePattern<fir::ResultOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(fir::ResultOp resultOp,
+                                PatternRewriter &rewriter) const override {
+    auto loc = resultOp.getLoc();
+    //  create scf.yieldOp
+    auto scfYieldOp = rewriter.create<scf::YieldOp>(loc, resultOp.getOperands());
+    // copy fir.result attributes to scf.yield
+    scfYieldOp->setAttrs(resultOp->getAttrs());
+    rewriter.replaceOp(resultOp, scfYieldOp.getResults()); 
+    return success();
+  }
+};
+
+struct IfConversion : public OpRewritePattern<fir::IfOp> {
+  using OpRewritePattern<fir::IfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(fir::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    auto loc = ifOp.getLoc();
+    Value condition = ifOp.getCondition();
+    TypeRange resultTypes = ifOp.getResultTypes();
+    // create ifOp
+    auto scfIfOp = rewriter.create<scf::IfOp>(loc, resultTypes, condition,/*withElseRegion=*/!ifOp.getElseRegion().empty()); 
+    // Helper function
+    auto handleRegion = [&](Region &sourceRegion, Region &targetRegion)  {
+      if (sourceRegion.empty())return failure();
+      Block &sourceBlock = sourceRegion.front();
+      if (sourceBlock.empty() || !sourceBlock.back().mightHaveTrait<OpTrait::IsTerminator>()) {
+        return rewriter.notifyMatchFailure(ifOp, "Region block does not have a terminator");
+      }
+      // Get Terminate operation,such as fir.result
+      Operation *terminator = sourceBlock.getTerminator();
+      SmallVector<Value> terminatorOperands(terminator->getOperands());
+      if (terminatorOperands.size() != resultTypes.size()) {
+        return rewriter.notifyMatchFailure(
+            ifOp, "Mismatch in number of result operands");
+      }
+      // Move all operations ,except the terminator
+      Block &targetBlock = targetRegion.front();
+      rewriter.setInsertionPointToStart(&targetBlock);
+      auto &sourceOps = sourceBlock.getOperations();
+      // Remove the terminator operation
+      sourceOps.pop_back(); 
+      targetBlock.getOperations().splice(targetBlock.begin(), sourceOps);
+      // scf.yield
+      rewriter.setInsertionPointToEnd(&targetBlock);
+      if (!targetBlock.empty() && isa<scf::YieldOp>(targetBlock.back())) {
+        rewriter.eraseOp(&targetBlock.back());
+      }
+      rewriter.create<scf::YieldOp>(loc, terminatorOperands);
+      return success();
+    };
+
+    // then Region
+    if (failed(handleRegion(ifOp.getThenRegion(), scfIfOp.getThenRegion())))
+      return failure();
+
+    // else Region
+    if (!ifOp.getElseRegion().empty()) {
+      if (failed(handleRegion(ifOp.getElseRegion(), scfIfOp.getElseRegion())))
+        return failure();
+    }
+
+    // Copy all the attributes from the old to new op
+    scfIfOp->setAttrs(ifOp->getAttrs());
+
+    // returns ,at most two
+    auto results = scfIfOp.getResults();
+    if (results.size() == 2) {
+      rewriter.replaceOp(ifOp, {results[0], results[1]});
+    } else {
+      rewriter.replaceOp(ifOp, scfIfOp.getResults());
+    }
+    
+    return success();
+  }
+};
 } // namespace
 
 void FIRToSCFPass::runOnOperation() {
@@ -94,6 +171,8 @@ void FIRToSCFPass::runOnOperation() {
   patterns.add<DoLoopConversion>(patterns.getContext());
   ConversionTarget target(getContext());
   target.addIllegalOp<fir::DoLoopOp>();
+  patterns.add<IfConversion>(patterns.getContext());
+  target.addIllegalOp<fir::IfOp>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
   if (failed(
           applyPartialConversion(getOperation(), target, std::move(patterns))))
