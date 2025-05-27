@@ -1,6 +1,24 @@
 // RUN: fir-opt %s --fir-to-scf | FileCheck %s
 
-
+// CHECK: func.func @_QFPtest_only(
+// CHECK:   %[[ARG0:.*]]: !fir.ref<tuple<!fir.ref<f32>>>) {
+// CHECK:   %[[VAL_0:.*]] = arith.constant 1 : i32
+// CHECK:   %[[VAL_1:.*]] = arith.constant false
+// CHECK:   %[[VAL_2:.*]] = arith.constant 0 : i32
+// CHECK:   scf.if %[[VAL_1:.*]] {
+// CHECK:    %[[VAL_3:.*]] = arith.addi %[[VAL_2:.*]], %[[VAL_0:.*]] : i32
+// CHECK:   }
+// CHECK:   return
+// CHECK:   }
+func.func @_QFPtest_only(%arg0: !fir.ref<tuple<!fir.ref<f32>>>) {
+    %c1_i32 = arith.constant 1 : i32
+    %false = arith.constant false
+    %c0_i32 = arith.constant 0 : i32
+    scf.if %false {
+      %0 = arith.addi %c0_i32, %c1_i32 : i32
+    }
+    return
+  }
 
 // CHECK: func.func @_QFPtest_else(
 // CHECK:   %[[ARG0:.*]]: !fir.ref<tuple<!fir.ref<f32>>>) {
@@ -46,9 +64,6 @@ func.func  @_QFPtest_else(%arg0: !fir.ref<tuple<!fir.ref<f32>>> {}) attributes {
   return
 }
 
-
-
-
 // CHECK-LABEL:     func.func @test_two_result() {
 // CHECK:           %[[VAL_0:.*]] = arith.constant 10 : i32
 // CHECK:           %[[VAL_1:.*]] = arith.constant 5 : i32
@@ -64,7 +79,6 @@ func.func  @_QFPtest_else(%arg0: !fir.ref<tuple<!fir.ref<f32>>> {}) attributes {
 // CHECK:            }
 // CHECK:            return 
 // CHECK:            }
-
 func.func @test_two_result() {
   %c10_i32 = arith.constant 10 : i32
   %c5_i32 = arith.constant 5 : i32
