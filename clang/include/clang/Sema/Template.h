@@ -185,10 +185,13 @@ enum class TemplateSubstitutionKind : char {
       return !(*this)(Depth, Index).isNull();
     }
 
-    bool isAnyArgInstantiationDependent() const {
+    bool isAnyArgInstantiationDependent(const ASTContext &C) const {
       for (ArgumentListLevel ListLevel : TemplateArgumentLists)
         for (const TemplateArgument &TA : ListLevel.Args)
-          if (TA.isInstantiationDependent())
+          // There might be null template arguments representing unused template
+          // parameter mappings in an MLTAL during concept checking.
+          if (!TA.isNull() &&
+              C.getCanonicalTemplateArgument(TA).isInstantiationDependent())
             return true;
       return false;
     }
@@ -205,8 +208,8 @@ enum class TemplateSubstitutionKind : char {
 
     /// Add a new outmost level to the multi-level template argument
     /// list.
-    /// A 'Final' substitution means that Subst* nodes won't be built
-    /// for the replacements.
+    /// A 'Final' substitution means that these Args don't need to be
+    /// resugared later.
     void addOuterTemplateArguments(Decl *AssociatedDecl, ArgList Args,
                                    bool Final) {
       assert(!NumRetainedOuterLevels &&
