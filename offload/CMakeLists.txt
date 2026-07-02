@@ -344,10 +344,10 @@ add_subdirectory(plugins-nextgen)
 add_subdirectory(tools)
 add_subdirectory(docs)
 
-if(BUILD_LIBOMPTARGET)
-  add_subdirectory(libomptarget)
-endif()
-
+# Build target agnostic offloading library.
+add_subdirectory(libompaccsupport)
+add_subdirectory(libomptarget)
+add_subdirectory(libacctarget)
 add_subdirectory(liboffload)
 
 # Add tests.

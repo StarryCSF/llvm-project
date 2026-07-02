@@ -1,22 +1,18 @@
-message(STATUS "Building offloading runtime library libomptarget.")
+message(STATUS "Building OpenMP offloading runtime library libomptarget.")
 
 if(NOT TARGET "omp")
   message(FATAL_ERROR "Error: omp target dependency of libomptarget not found. Please ensure 'openmp' is on LLVM_ENABLE_RUNTIMES list.")
 endif()
 
-add_library(omptarget SHARED
-  device.cpp
+add_llvm_library(omptarget
+  SHARED
+
   interface.cpp
   omptarget.cpp
-  OffloadRTL.cpp
   LegacyAPI.cpp
-  PluginManager.cpp
-  DeviceImage.cpp
 
   OpenMP/API.cpp
-  OpenMP/Mapping.cpp
   OpenMP/InteropAPI.cpp
-  OpenMP/OMPT/Callback.cpp
 
   KernelLanguage/API.cpp
 )
@@ -28,11 +24,13 @@ else()
 endif()
 target_link_libraries(omptarget PRIVATE omp ${llvm_libs})
 target_include_directories(omptarget PRIVATE
-  ${LIBOMPTARGET_INCLUDE_DIR} ${LIBOMPTARGET_BINARY_INCLUDE_DIR}
+  ${LIBOMPTARGET_INCLUDE_DIR}
+  ${LIBOMPTARGET_BINARY_INCLUDE_DIR}
 )
 
 if(LLVM_HAVE_LINK_VERSION_SCRIPT)
   target_link_libraries(omptarget PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports")
+  set_property(TARGET omptarget APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/exports)
 endif()
 
 # Define the TARGET_NAME and DEBUG_PREFIX.
@@ -41,9 +39,7 @@ target_compile_definitions(omptarget PRIVATE
   DEBUG_PREFIX="omptarget"
 )
 
-foreach(plugin IN LISTS LIBOMPTARGET_PLUGINS_TO_BUILD)
-  target_link_libraries(omptarget PRIVATE omptarget.rtl.${plugin})
-endforeach()
+target_link_libraries(omptarget PRIVATE ompaccsupport)
 
 target_compile_options(omptarget PRIVATE ${offload_compile_flags})
 target_link_options(omptarget PRIVATE ${offload_link_flags})
