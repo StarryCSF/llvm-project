@@ -465,7 +465,7 @@ struct KernelArgsMappingInfoTy {
     Ptrs.resize(NumArgs);
     for (uint32_t I = 0; I < NumArgs; ++I)
       Ptrs[I] = &Args[I];
-    return KernelLaunchParamsTy{sizeof(void *) * NumArgs, &Args[0], &Ptrs[0]};
+    return KernelLaunchParamsTy{NumArgs, &Ptrs[0]};
   }
 };
 
@@ -1841,7 +1841,7 @@ EXTERN int __tgt_acc_kernel(ident_t *Loc, void *Kernel, int64_t Flags,
         ODBG(ADT_Interface) << "NumWorkers " << Args->NumWorkers;
         ODBG(ADT_Interface) << "SmemSize " << Args->SmemSize;
 
-        assert(KI.Args.size() * sizeof(void *) == LaunchParams.Size);
+        assert(KI.Args.size() * sizeof(void *) == LaunchParams.NumArgs);
         for (unsigned I = 0; I < KI.Args.size(); I++)
           ODBG(ADT_Interface) << "Arg #" << I << ": " << KI.Args[I];
 
