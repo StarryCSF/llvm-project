@@ -142,6 +142,11 @@ void addOpenMPHostOffloadingArgs(const Compilation &C, const JobAction &JA,
                                  const llvm::opt::ArgList &Args,
                                  llvm::opt::ArgStringList &CmdArgs);
 
+/// Add OpenACC runtime (libacctarget) when -fopenacc is used.
+/// Returns true if the runtime was added.
+bool addOpenACCRuntime(const Compilation &C, llvm::opt::ArgStringList &CmdArgs,
+                       const ToolChain &TC, const llvm::opt::ArgList &Args);
+
 void addHIPRuntimeLibArgs(const ToolChain &TC, Compilation &C,
                           const llvm::opt::ArgList &Args,
                           llvm::opt::ArgStringList &CmdArgs);

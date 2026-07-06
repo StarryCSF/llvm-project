@@ -1525,6 +1525,23 @@ void tools::addOpenMPHostOffloadingArgs(const Compilation &C,
       Args.MakeArgString(Twine(Targets) + llvm::join(Triples, ",")));
 }
 
+bool tools::addOpenACCRuntime(const Compilation &C, ArgStringList &CmdArgs,
+                             const ToolChain &TC, const ArgList &Args) {
+  if (!Args.hasArg(options::OPT_fopenacc))
+    return false;
+
+  // Add library search path (same location as OpenMP offload libs)
+  SmallString<256> DefaultLibPath =
+      llvm::sys::path::parent_path(TC.getDriver().Dir);
+  llvm::sys::path::append(DefaultLibPath, CLANG_INSTALL_LIBDIR_BASENAME);
+  CmdArgs.push_back(Args.MakeArgString("-L" + DefaultLibPath));
+
+  // Link the OpenACC runtime
+  CmdArgs.push_back("-lacctarget");
+
+  return true;
+}
+
 static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
                                 ArgStringList &CmdArgs, StringRef Sanitizer,
                                 bool IsShared, bool IsWhole) {

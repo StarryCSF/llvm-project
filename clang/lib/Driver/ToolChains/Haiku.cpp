@@ -100,6 +100,8 @@ void haiku::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     bool StaticOpenMP = Args.hasArg(options::OPT_static_openmp) && !Static;
     addOpenMPRuntime(C, CmdArgs, ToolChain, Args, StaticOpenMP);
 
+    addOpenACCRuntime(C, CmdArgs, ToolChain, Args);
+
     if (D.CCCIsCXX() && ToolChain.ShouldLinkCXXStdlib(Args))
       ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
 

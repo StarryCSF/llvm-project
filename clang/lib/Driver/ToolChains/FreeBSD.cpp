@@ -289,6 +289,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                         !Args.hasArg(options::OPT_static);
     addOpenMPRuntime(C, CmdArgs, ToolChain, Args, StaticOpenMP);
 
+    addOpenACCRuntime(C, CmdArgs, ToolChain, Args);
+
     if (D.CCCIsCXX()) {
       if (ToolChain.ShouldLinkCXXStdlib(Args))
         ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
