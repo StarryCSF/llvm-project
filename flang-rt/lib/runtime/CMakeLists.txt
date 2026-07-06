@@ -110,6 +110,12 @@ set(supported_sources
   work-queue.cpp
 )
 
+# Sources that need to both provide public .mod files
+# and be included in the runtime library.
+set(runtime_module_sources
+  openacc.f90
+)
+
 # List of source not used for GPU offloading.
 set(host_sources
   iso_fortran_env_impl.cpp
@@ -257,6 +263,13 @@ if (TARGET FortranFloat128MathILib)
   endif ()
 endif ()
 
+function (add_module_barrier barriername objlib)
+  add_custom_target(${barriername}
+    COMMAND ${CMAKE_COMMAND} -E true
+  )
+  add_dependencies(${barriername} ${objlib})
+endfunction ()
+
 
 # Build module files if requested.
 # The object files written by Flang for these are unused. In the future parts
@@ -269,6 +282,8 @@ if (FLANG_RT_FORTRAN_MODULES)
     ${module_sources}
   )
   flang_module_target(flang-rt-mod PUBLIC)
+
+  add_module_barrier(flang-rt-mod.barrier flang-rt-mod)
 
   if (RUNTIMES_FORTRAN_MODULES)
     set(_mod_install_dest "${RUNTIMES_INSTALL_RESOURCE_MOD_PATH}/..")
@@ -306,6 +321,8 @@ else ()
   set(sources ${supported_sources} ${host_sources} ${f128_sources})
 endif ()
 
+list(APPEND sources ${runtime_module_sources})
+
 
 if (NOT WIN32)
   add_flangrt_library(flang_rt.runtime STATIC SHARED
@@ -314,6 +331,24 @@ if (NOT WIN32)
     INSTALL_WITH_TOOLCHAIN
     ADDITIONAL_HEADERS ${public_headers} ${private_headers}
   )
+
+  if (FLANG_RT_FORTRAN_MODULES AND runtime_module_sources)
+    get_target_property(_flang_rt_target flang_rt.runtime.compile ALIASED_TARGET)
+    set_target_properties(${_flang_rt_target}
+      PROPERTIES
+        Fortran_MODULE_DIRECTORY "${RUNTIMES_OUTPUT_RESOURCE_MOD_DIR}"
+    )
+    target_compile_options(${_flang_rt_target} PRIVATE
+      "$<$<COMPILE_LANGUAGE:Fortran>:-fintrinsic-modules-path=${RUNTIMES_OUTPUT_RESOURCE_MOD_DIR}>"
+    )
+    if (CMAKE_Fortran_COMPILER_ID MATCHES "LLVM")
+      target_compile_options(${_flang_rt_target} PRIVATE
+        "$<$<COMPILE_LANGUAGE:Fortran>:SHELL:-Xflang;SHELL:-fno-reformat>"
+      )
+    endif ()
+    add_dependencies(flang_rt.runtime flang-rt-mod.barrier)
+  endif ()
+
 
   enable_cuda_compilation(flang_rt.runtime "${sources}")
 
