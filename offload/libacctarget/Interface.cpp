@@ -1987,6 +1987,9 @@ static void initAccRuntime() {
 
 static void deinitAccRuntime() {
   FUNC_LOGGER();
+  if (InitRefCount == 0) {
+    return;
+  }
   if (InitRefCount == 1) {
     llvm::acc::target::QueueManager->deinit();
     delete llvm::acc::target::QueueManager;

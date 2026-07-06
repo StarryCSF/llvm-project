@@ -21,6 +21,8 @@ EXTERN void __tgt_init_all_rtls() {
 
 EXTERN void __tgt_register_rpc_callback(unsigned (*Callback)(void *,
                                                              unsigned)) {
+  if (!PM)
+    return;
   for (auto &Plugin : PM->plugins())
     if (Plugin.is_initialized())
       Plugin.getRPCServer().registerCallback(Callback);
