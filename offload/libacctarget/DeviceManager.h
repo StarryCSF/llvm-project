@@ -33,7 +33,11 @@ private:
       std::array<SingleDeviceTypeMapTy, AccDeviceNumConcreteTypes>;
   AllDeviceTypeMap PMDeviceMap;
 
+  // Cache for acc_get_property_string results to ensure pointer lifetime.
+  mutable llvm::StringMap<std::string> PropertyStringCache;
+
   SingleDeviceTypeMapTy &getSingleDeviceTypeMap(acc_device_t DeviceType);
+  DeviceIdTy &getSingleAccCurrentDeviceNumVar(acc_device_t DeviceType);
 
 public:
   void init();

@@ -9,6 +9,7 @@
 #include "DeviceManager.h"
 #include "PluginManager.h"
 #include "openacc.h"
+#include "llvm/ADT/StringMap.h"
 
 // OpenACC 3.4, sec. 2.3.1 "Modifying and Retrieving ICV Values"
 // Each host thread needs its own value, thus these are `thread_local`.
@@ -68,7 +69,16 @@ inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
 
 DeviceManagerTy::SingleDeviceTypeMapTy &
 DeviceManagerTy::getSingleDeviceTypeMap(acc_device_t DeviceType) {
+  if (DeviceType < AccDeviceTypeOffset)
+    return PMDeviceMap[0];
   return PMDeviceMap[DeviceType - AccDeviceTypeOffset];
+}
+
+DeviceManagerTy::DeviceIdTy &
+DeviceManagerTy::getSingleAccCurrentDeviceNumVar(acc_device_t DeviceType) {
+  if (DeviceType < AccDeviceTypeOffset)
+    return icv::AccCurrentDeviceNumVar[0];
+  return icv::AccCurrentDeviceNumVar[DeviceType - AccDeviceTypeOffset];
 }
 
 void DeviceManagerTy::init() {
@@ -82,7 +92,7 @@ void DeviceManagerTy::refreshDeviceMapping(bool UpdateDeviceType) {
 
   for (int DeviceTypeInt = acc_device_concrete_type_begin;
        DeviceTypeInt < acc_device_concrete_type_end; DeviceTypeInt++)
-    getSingleDeviceTypeMap(acc_device_nvidia).resize(0);
+    getSingleDeviceTypeMap(static_cast<acc_device_t>(DeviceTypeInt)).resize(0);
 
   auto ExclusiveDevicesAccessor = PM->getExclusiveDevicesAccessor();
   for (DeviceTy &Device : PM->devices(ExclusiveDevicesAccessor)) {
@@ -138,10 +148,11 @@ int DeviceManagerTy::getPMDeviceId(acc_device_t DeviceType) {
            << icv::AccCurrentDefaultDeviceTypeVar;
     DeviceType = icv::AccCurrentDefaultDeviceTypeVar;
   }
-  ODBG() << "Current device has id " << icv::AccCurrentDeviceNumVar[DeviceType];
+  ODBG() << "Current device has id "
+         << getSingleAccCurrentDeviceNumVar(DeviceType);
   checkICVs();
   return getSingleDeviceTypeMap(
-      DeviceType)[icv::AccCurrentDeviceNumVar[DeviceType]];
+      DeviceType)[getSingleAccCurrentDeviceNumVar(DeviceType)];
 }
 
 int DeviceManagerTy::getPMDeviceId() {
@@ -152,17 +163,17 @@ int DeviceManagerTy::getPMDeviceId() {
 
 int DeviceManagerTy::getDeviceId(acc_device_t DeviceType) {
   checkICVs();
-  return icv::AccCurrentDeviceNumVar[DeviceType];
+  return getSingleAccCurrentDeviceNumVar(DeviceType);
 }
 
 void DeviceManagerTy::checkICVs() {
-  ODBG() << "acc-current-device-type = " << icv::AccCurrentDeviceTypeVar;
-  for (int DeviceTypeInt = acc_device_concrete_type_begin;
-       DeviceTypeInt < acc_device_concrete_type_end; DeviceTypeInt++) {
-    acc_device_t DeviceType = static_cast<acc_device_t>(DeviceTypeInt);
-    ODBG() << "acc-current-device-num[" << DeviceType
-           << "] = " << icv::AccCurrentDeviceNumVar[DeviceType];
-  }
+  // ODBG() << "acc-current-device-type = " << icv::AccCurrentDeviceTypeVar;
+  // for (int DeviceTypeInt = acc_device_concrete_type_begin;
+  //      DeviceTypeInt < acc_device_concrete_type_end; DeviceTypeInt++) {
+  //   acc_device_t DeviceType = static_cast<acc_device_t>(DeviceTypeInt);
+  //   ODBG() << "acc-current-device-num[" << DeviceType
+  //          << "] = " << getSingleAccCurrentDeviceNumVar(DeviceType);
+  // }
   ODBG() << "acc-current-device-type = " << icv::AccCurrentDeviceTypeVar;
   assert(icv::AccCurrentDeviceTypeVar == acc_device_default ||
          (icv::AccCurrentDeviceTypeVar >= acc_device_concrete_type_begin &&
@@ -173,9 +184,9 @@ void DeviceManagerTy::checkICVs() {
     ODBG() << "Corrected to value of AccCurrentDefaultDeviceTypeVar: "
            << icv::AccCurrentDefaultDeviceTypeVar;
   }
-  ODBG() << icv::AccCurrentDeviceNumVar[DeviceType];
-  assert(icv::AccCurrentDeviceNumVar[DeviceType] <
-         static_cast<int64_t>(getSingleDeviceTypeMap(DeviceType).size()));
+  ODBG() << getSingleAccCurrentDeviceNumVar(DeviceType);
+  // assert(getSingleAccCurrentDeviceNumVar(DeviceType) <
+  //        static_cast<int64_t>(getSingleDeviceTypeMap(DeviceType).size()));
 }
 
 int DeviceManagerTy::getNumDevices(acc_device_t DeviceType) {
@@ -191,7 +202,7 @@ void DeviceManagerTy::setAllDeviceId(int DevNum) {
 }
 
 void DeviceManagerTy::setDeviceId(acc_device_t DeviceType, int DevNum) {
-  icv::AccCurrentDeviceNumVar[DeviceType] = DevNum;
+  getSingleAccCurrentDeviceNumVar(DeviceType) = DevNum;
   checkICVs();
 }
 
@@ -202,7 +213,14 @@ void DeviceManagerTy::setDeviceId(int DevNum) {
 
 acc_device_t DeviceManagerTy::getDeviceType() {
   checkICVs();
-  return icv::AccCurrentDeviceTypeVar;
+  acc_device_t DeviceType = icv::AccCurrentDeviceTypeVar;
+  if (DeviceType == acc_device_default)
+    DeviceType = icv::AccCurrentDefaultDeviceTypeVar;
+
+  assert(DeviceType != acc_device_current && DeviceType != acc_device_default &&
+         DeviceType != acc_device_not_host);
+
+  return DeviceType;
 }
 
 void DeviceManagerTy::setDeviceType(acc_device_t DeviceType) {
@@ -210,16 +228,67 @@ void DeviceManagerTy::setDeviceType(acc_device_t DeviceType) {
   checkICVs();
 }
 
-size_t DeviceManagerTy::getDeviceProperty(int, acc_device_t,
-                                          acc_device_property_t) {
-  REPORT_FATAL() << "device properties not yet implemented";
+size_t DeviceManagerTy::getDeviceProperty(int DevNum, acc_device_t DevType,
+                                          acc_device_property_t Prop) {
+  auto &DevMap = getSingleDeviceTypeMap(DevType);
+  if (DevNum < 0 || static_cast<size_t>(DevNum) >= DevMap.size())
+    return 0;
+  int PMDeviceId = DevMap[DevNum];
+  auto DevOrErr = PM->getDevice(PMDeviceId);
+  if (!DevOrErr)
+    return 0;
+  DeviceTy &Dev = *DevOrErr;
+
+  switch (Prop) {
+  case acc_property_memory:
+    return Dev.getInfo<uint64_t>(DeviceInfo::GLOBAL_MEM_SIZE);
+  case acc_property_free_memory:
+    // The plugin does not expose free memory via DeviceInfo.
+    // Return 0 like GCC host.
+    return 0;
+  case acc_property_shared_memory_support:
+    // Whether the device has local shared memory.
+    return Dev.getInfo<uint64_t>(DeviceInfo::WORK_GROUP_LOCAL_MEM_SIZE) > 0 ? 1
+                                                                            : 0;
+  default:
+    return 0;
+  }
+
   return 0;
 }
 
-const char *DeviceManagerTy::getDevicePropertyString(int, acc_device_t,
-                                                     acc_device_property_t) {
-  REPORT_FATAL() << "device properties not yet implemented";
-  return "";
+const char *
+DeviceManagerTy::getDevicePropertyString(int DevNum, acc_device_t DevType,
+                                         acc_device_property_t Prop) {
+  auto &DevMap = getSingleDeviceTypeMap(DevType);
+  if (DevNum < 0 || static_cast<size_t>(DevNum) >= DevMap.size())
+    return nullptr;
+  int PMDeviceId = DevMap[DevNum];
+  auto DevOrErr = PM->getDevice(PMDeviceId);
+  if (!DevOrErr)
+    return nullptr;
+  DeviceTy &Dev = *DevOrErr;
+
+  DeviceInfo InfoKey;
+  switch (Prop) {
+  case acc_property_name:
+    InfoKey = DeviceInfo::NAME;
+    break;
+  case acc_property_vendor:
+    InfoKey = DeviceInfo::VENDOR;
+    break;
+  case acc_property_driver:
+    InfoKey = DeviceInfo::DRIVER_VERSION;
+    break;
+  default:
+    return nullptr;
+  }
+
+  std::string Result = Dev.getInfo<std::string>(InfoKey);
+  std::string CacheKey =
+      std::to_string(PMDeviceId) + "_" + std::to_string(Prop);
+  auto It = PropertyStringCache.try_emplace(CacheKey, std::move(Result));
+  return It.first->second.c_str();
 }
 
 llvm::Expected<DeviceTy &> DeviceManagerTy::getDevice(acc_device_t DeviceType) {
