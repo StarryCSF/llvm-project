@@ -70,6 +70,6 @@ endif()
 # are now separated in the build directory.
 set_target_properties(acctarget PROPERTIES
                       POSITION_INDEPENDENT_CODE ON
-                      INSTALL_RPATH "$ORIGIN"
+                      INSTALL_RPATH "$ORIGIN:$ORIGIN/.."
                       BUILD_RPATH "$ORIGIN:${CMAKE_CURRENT_BINARY_DIR}/..")
 install(TARGETS acctarget LIBRARY COMPONENT acctarget DESTINATION "${OFFLOAD_INSTALL_LIBDIR}")

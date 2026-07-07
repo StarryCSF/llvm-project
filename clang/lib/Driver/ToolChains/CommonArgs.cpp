@@ -1526,18 +1526,27 @@ void tools::addOpenMPHostOffloadingArgs(const Compilation &C,
 }
 
 bool tools::addOpenACCRuntime(const Compilation &C, ArgStringList &CmdArgs,
-                             const ToolChain &TC, const ArgList &Args) {
+                              const ToolChain &TC, const ArgList &Args) {
   if (!Args.hasArg(options::OPT_fopenacc))
     return false;
 
-  // Add library search path (same location as OpenMP offload libs)
+  // Add library search path (same location as OpenMP offload libs).
   SmallString<256> DefaultLibPath =
       llvm::sys::path::parent_path(TC.getDriver().Dir);
   llvm::sys::path::append(DefaultLibPath, CLANG_INSTALL_LIBDIR_BASENAME);
   CmdArgs.push_back(Args.MakeArgString("-L" + DefaultLibPath));
-
   // Link the OpenACC runtime
   CmdArgs.push_back("-lacctarget");
+
+  // Add dynamic linker search path.
+  // Such as lib and lib/x86_64-redhat-linux.
+  SmallString<256> RPath = llvm::sys::path::parent_path(TC.getDriver().Dir);
+  llvm::sys::path::append(RPath, CLANG_INSTALL_LIBDIR_BASENAME);
+  CmdArgs.push_back("-rpath");
+  CmdArgs.push_back(Args.MakeArgString(RPath));
+  llvm::sys::path::append(RPath, TC.getTriple().str());
+  CmdArgs.push_back("-rpath");
+  CmdArgs.push_back(Args.MakeArgString(RPath));
 
   return true;
 }

@@ -58,6 +58,6 @@ target_link_options(ompaccsupport PRIVATE ${offload_link_flags})
 
 set_target_properties(ompaccsupport PROPERTIES
                       POSITION_INDEPENDENT_CODE ON
-                      INSTALL_RPATH "$ORIGIN"
+                      INSTALL_RPATH "$ORIGIN:$ORIGIN/.."
                       BUILD_RPATH "$ORIGIN:${CMAKE_CURRENT_BINARY_DIR}/..")
 install(TARGETS ompaccsupport LIBRARY COMPONENT ompaccsupport DESTINATION "${OFFLOAD_INSTALL_LIBDIR}")
