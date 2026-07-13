@@ -1,0 +1,436 @@
+From 408df48a72820a8d68d33e9dcf578b925898943b Mon Sep 17 00:00:00 2001
+From: Delaram Talaashrafi <dtalaashrafi@nvidia.com>
+Date: Tue, 23 Jun 2026 16:26:12 -0400
+Subject: [PATCH] [MLIR][OpenACC] Add acc-emit-remarks-loop pass (#205203)
+
+Add a function-level pass that emits optimization remarks for loops in
+`acc.compute_region`, describing their mapping to OpenACC parallel
+levels (gang, worker, vector, sequential) and GPU dimensions (blockIdx,
+threadIdx).
+---
+ .../mlir/Dialect/OpenACC/Transforms/Passes.td |  17 ++
+ .../OpenACC/Transforms/ACCEmitRemarksLoop.cpp | 163 ++++++++++++++++++
+ .../Dialect/OpenACC/Transforms/CMakeLists.txt |   1 +
+ .../acc-emit-remarks-loop-pipeline.mlir       |  40 +++++
+ .../OpenACC/acc-emit-remarks-loop.mlir        | 155 +++++++++++++++++
+ 5 files changed, 376 insertions(+)
+ create mode 100644 mlir/lib/Dialect/OpenACC/Transforms/ACCEmitRemarksLoop.cpp
+ create mode 100644 mlir/test/Dialect/OpenACC/acc-emit-remarks-loop-pipeline.mlir
+ create mode 100644 mlir/test/Dialect/OpenACC/acc-emit-remarks-loop.mlir
+
+diff --git a/mlir/include/mlir/Dialect/OpenACC/Transforms/Passes.td b/mlir/include/mlir/Dialect/OpenACC/Transforms/Passes.td
+index 485f68dfc9338..e35e38adceb02 100644
+--- a/mlir/include/mlir/Dialect/OpenACC/Transforms/Passes.td
++++ b/mlir/include/mlir/Dialect/OpenACC/Transforms/Passes.td
+@@ -176,6 +176,23 @@ def ACCLegalizeSerial : Pass<"acc-legalize-serial", "mlir::func::FuncOp"> {
+ }
+ 
+ 
++def ACCEmitRemarksLoop : Pass<"acc-emit-remarks-loop", "mlir::func::FuncOp"> {
++  let summary = "Emit OpenACC loop parallelism mapping remarks";
++  let description = [{
++    This pass emits optimization remarks describing how loops inside OpenACC
++    compute regions are mapped to parallelism levels (gang, worker, vector,
++    sequential) and the corresponding GPU parallel dimensions.
++
++    The pass walks `acc.compute_region` operations that originated from OpenACC
++    compute constructs and reports remarks for each loop carrying an
++    `acc.par_dims` attribute.
++  }];
++  let options = [
++    Option<"gpuDimSeparator", "gpu-dim-separator", "std::string", "\".\"",
++           "Separator between GPU index prefix and axis name in remarks ">
++  ];
++}
++
+ def ACCLoopTiling : Pass<"acc-loop-tiling", "mlir::func::FuncOp"> {
+   let summary = "Tile OpenACC loops with tile clauses";
+   let description = [{
+diff --git a/mlir/lib/Dialect/OpenACC/Transforms/ACCEmitRemarksLoop.cpp b/mlir/lib/Dialect/OpenACC/Transforms/ACCEmitRemarksLoop.cpp
+new file mode 100644
+index 0000000000000..29e71fe1e9097
+--- /dev/null
++++ b/mlir/lib/Dialect/OpenACC/Transforms/ACCEmitRemarksLoop.cpp
+@@ -0,0 +1,163 @@
++//===- ACCEmitRemarksLoop.cpp - Emit OpenACC loop mapping remarks --------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This pass emits optimization remarks describing how loops inside OpenACC
++// compute regions are mapped to parallelism levels and GPU dimensions.
++//
++//===----------------------------------------------------------------------===//
++
++#include "mlir/Dialect/Func/IR/FuncOps.h"
++#include "mlir/Dialect/OpenACC/Analysis/OpenACCSupport.h"
++#include "mlir/Dialect/OpenACC/OpenACC.h"
++#include "mlir/Dialect/OpenACC/OpenACCParMapping.h"
++#include "mlir/Dialect/OpenACC/OpenACCUtilsLoop.h"
++#include "mlir/Dialect/OpenACC/Transforms/Passes.h"
++#include "mlir/Dialect/SCF/IR/SCF.h"
++#include "mlir/Interfaces/FunctionInterfaces.h"
++#include "mlir/Interfaces/LoopLikeInterface.h"
++#include "llvm/ADT/StringExtras.h"
++#include "llvm/Support/Debug.h"
++
++namespace mlir {
++namespace acc {
++#define GEN_PASS_DEF_ACCEMITREMARKSLOOP
++#include "mlir/Dialect/OpenACC/Transforms/Passes.h.inc"
++} // namespace acc
++} // namespace mlir
++
++#define DEBUG_TYPE "acc-emit-remarks-loop"
++
++using namespace mlir;
++
++namespace {
++
++static bool shouldEmitLoopRemarks(acc::ComputeRegionOp computeRegion) {
++  StringRef origin = computeRegion.getOrigin();
++  if (origin == acc::KernelsOp::getOperationName() ||
++      origin == acc::ParallelOp::getOperationName() ||
++      origin == acc::SerialOp::getOperationName())
++    return true;
++
++  if (auto func = computeRegion->getParentOfType<FunctionOpInterface>())
++    return acc::isSpecializedAccRoutine(func);
++  return false;
++}
++
++static std::string getACCParLevelName(acc::GPUParallelDimAttr parDim,
++                                      const acc::ACCToGPUMappingPolicy &policy,
++                                      acc::ComputeRegionOp computeRegion) {
++  std::string accName;
++  if (policy.isSeq(parDim))
++    accName = "sequential";
++  else if (policy.isVector(parDim))
++    accName = "vector";
++  else if (policy.isWorker(parDim))
++    accName = "worker";
++  else if (policy.isGang(parDim))
++    accName = "gang";
++
++  if (!policy.isSeq(parDim)) {
++    if (std::optional<uint64_t> constant =
++            computeRegion.getKnownConstantLaunchArg(parDim))
++      accName += "(" + std::to_string(*constant) + ")";
++  }
++  return accName;
++}
++
++static std::string getGPUParDimName(acc::GPUParallelDimAttr parDim,
++                                    llvm::StringRef separator) {
++  auto formatDim = [&](llvm::StringRef prefix, char axis) {
++    return (prefix + separator).str() + axis;
++  };
++
++  if (parDim.isThreadX())
++    return formatDim("threadidx", 'x');
++  if (parDim.isThreadY())
++    return formatDim("threadidx", 'y');
++  if (parDim.isThreadZ())
++    return formatDim("threadidx", 'z');
++  if (parDim.isBlockX())
++    return formatDim("blockidx", 'x');
++  if (parDim.isBlockY())
++    return formatDim("blockidx", 'y');
++  if (parDim.isBlockZ())
++    return formatDim("blockidx", 'z');
++  return {};
++}
++
++static void emitLoopMappingRemark(acc::ComputeRegionOp computeRegion,
++                                  LoopLikeOpInterface loopOp,
++                                  acc::OpenACCSupport &accSupport,
++                                  const acc::ACCToGPUMappingPolicy &policy,
++                                  llvm::StringRef gpuDimSeparator) {
++  acc::GPUParallelDimsAttr parDimsAttr =
++      loopOp->getAttrOfType<acc::GPUParallelDimsAttr>(
++          acc::GPUParallelDimsAttr::name);
++
++  SmallVector<acc::GPUParallelDimAttr, 1> seqParDims;
++  ArrayRef<acc::GPUParallelDimAttr> parDims;
++  if (parDimsAttr) {
++    parDims = parDimsAttr.getArray();
++  } else if (isa<scf::ForOp>(loopOp.getOperation())) {
++    seqParDims.push_back(acc::GPUParallelDimAttr::seqDim(loopOp->getContext()));
++    parDims = seqParDims;
++  } else {
++    return;
++  }
++
++  accSupport.emitRemark(
++      loopOp,
++      [&]() {
++        SmallVector<std::string> accMsgs;
++        SmallVector<std::string> gpuMsgs;
++
++        for (acc::GPUParallelDimAttr parDim : parDims) {
++          accMsgs.push_back(getACCParLevelName(parDim, policy, computeRegion));
++          if (std::string gpuName = getGPUParDimName(parDim, gpuDimSeparator);
++              !gpuName.empty())
++            gpuMsgs.push_back(std::move(gpuName));
++        }
++
++        std::string msg = "!$acc loop " + llvm::join(accMsgs, ", ");
++
++        if (uint64_t collapseCount = acc::getCollapseCount(loopOp);
++            collapseCount > 1)
++          msg += " collapse(" + std::to_string(collapseCount) + ")";
++
++        if (!gpuMsgs.empty())
++          msg += " ! " + llvm::join(gpuMsgs, " ");
++        return msg;
++      },
++      DEBUG_TYPE);
++}
++
++class ACCEmitRemarksLoop
++    : public acc::impl::ACCEmitRemarksLoopBase<ACCEmitRemarksLoop> {
++public:
++  using ACCEmitRemarksLoopBase<ACCEmitRemarksLoop>::ACCEmitRemarksLoopBase;
++
++  void runOnOperation() override {
++    func::FuncOp func = getOperation();
++    acc::OpenACCSupport &accSupport = getAnalysis<acc::OpenACCSupport>();
++    acc::DefaultACCToGPUMappingPolicy policy;
++    if (gpuDimSeparator.empty())
++      gpuDimSeparator = ".";
++
++    func.walk([&](acc::ComputeRegionOp computeRegion) {
++      if (!shouldEmitLoopRemarks(computeRegion))
++        return;
++
++      computeRegion.getRegion().walk([&](LoopLikeOpInterface loopOp) {
++        emitLoopMappingRemark(computeRegion, loopOp, accSupport, policy,
++                              gpuDimSeparator);
++      });
++    });
++  }
++};
++
++} // namespace
+diff --git a/mlir/lib/Dialect/OpenACC/Transforms/CMakeLists.txt b/mlir/lib/Dialect/OpenACC/Transforms/CMakeLists.txt
+index 5bb92592a6512..2ae3571673469 100644
+--- a/mlir/lib/Dialect/OpenACC/Transforms/CMakeLists.txt
++++ b/mlir/lib/Dialect/OpenACC/Transforms/CMakeLists.txt
+@@ -4,6 +4,7 @@ add_mlir_dialect_library(MLIROpenACCTransforms
+   ACCRoutineLowering.cpp
+   ACCRoutineToGPUFunc.cpp
+   ACCDeclareGPUModuleInsertion.cpp
++  ACCEmitRemarksLoop.cpp
+   ACCIfClauseLowering.cpp
+   ACCImplicitData.cpp
+   ACCRecipeMaterialization.cpp
+diff --git a/mlir/test/Dialect/OpenACC/acc-emit-remarks-loop-pipeline.mlir b/mlir/test/Dialect/OpenACC/acc-emit-remarks-loop-pipeline.mlir
+new file mode 100644
+index 0000000000000..c559ef68090e2
+--- /dev/null
++++ b/mlir/test/Dialect/OpenACC/acc-emit-remarks-loop-pipeline.mlir
+@@ -0,0 +1,40 @@
++// RUN: mlir-opt %s -split-input-file -acc-compute-lowering -acc-emit-remarks-loop --remarks-filter="(open)?acc.*" 2>&1 | FileCheck %s
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=parallel_gang_loop | Remark="!$acc loop gang(10) ! blockidx.x"
++func.func @parallel_gang_loop(%buf: memref<1xi32>) {
++  %c0 = arith.constant 0 : index
++  %c1_i32 = arith.constant 1 : i32
++  %c10_i32 = arith.constant 10 : i32
++  %c100_i32 = arith.constant 100 : i32
++
++  %dev = acc.copyin varPtr(%buf : memref<1xi32>) -> memref<1xi32>
++  acc.parallel num_gangs({%c10_i32 : i32}) dataOperands(%dev : memref<1xi32>) {
++    acc.loop gang control(%arg0 : i32) = (%c1_i32 : i32) to (%c100_i32 : i32) step (%c1_i32 : i32) {
++      memref.store %arg0, %dev[%c0] : memref<1xi32>
++      acc.yield
++    } attributes {independent = [#acc.device_type<none>]}
++    acc.yield
++  }
++  acc.copyout accPtr(%dev : memref<1xi32>) to varPtr(%buf : memref<1xi32>)
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=parallel_loop_auto_collapse | Remark="!$acc loop sequential collapse(2)"
++func.func @parallel_loop_auto_collapse(%buf: memref<1xi32>, %lb0 : index, %ub0 : index, %lb1 : index, %ub1 : index) {
++  %c0 = arith.constant 0 : index
++  %c1 = arith.constant 1 : index
++
++  %dev = acc.copyin varPtr(%buf : memref<1xi32>) -> memref<1xi32>
++  acc.parallel dataOperands(%dev : memref<1xi32>) {
++    acc.loop control(%i : index, %j : index) = (%lb0, %lb1 : index, index) to (%ub0, %ub1 : index, index) step (%c1, %c1 : index, index) {
++      %vi = arith.index_cast %i : index to i32
++      memref.store %vi, %dev[%c0] : memref<1xi32>
++      acc.yield
++    } attributes {auto_ = [#acc.device_type<none>]}
++    acc.yield
++  }
++  acc.copyout accPtr(%dev : memref<1xi32>) to varPtr(%buf : memref<1xi32>)
++  return
++}
+diff --git a/mlir/test/Dialect/OpenACC/acc-emit-remarks-loop.mlir b/mlir/test/Dialect/OpenACC/acc-emit-remarks-loop.mlir
+new file mode 100644
+index 0000000000000..0c310510652e7
+--- /dev/null
++++ b/mlir/test/Dialect/OpenACC/acc-emit-remarks-loop.mlir
+@@ -0,0 +1,155 @@
++// RUN: mlir-opt %s -split-input-file -acc-emit-remarks-loop --remarks-filter="(open)?acc.*" 2>&1 | FileCheck %s
++// RUN: mlir-opt %s -split-input-file -acc-emit-remarks-loop='gpu-dim-separator=%' --remarks-filter="(open)?acc.*" 2>&1 | FileCheck %s --check-prefix=PERCENT
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=vector_loop | Remark="!$acc loop vector(128) ! threadidx.x"
++func.func @vector_loop() {
++  %c128 = arith.constant 128 : index
++  acc.kernel_environment {
++    %w0 = acc.par_width %c128 {par_dim = #acc.par_dim<thread_x>}
++    acc.compute_region launch(%arg0 = %w0) {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c128_inner = arith.constant 128 : index
++      scf.parallel (%iv) = (%c0) to (%c128_inner) step (%c1) {
++        scf.reduce
++      } {acc.par_dims = #acc<par_dims[thread_x]>}
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=gang_loop | Remark="!$acc loop gang(8) ! blockidx.x"
++func.func @gang_loop() {
++  %c8 = arith.constant 8 : index
++  acc.kernel_environment {
++    %w0 = acc.par_width %c8 {par_dim = #acc.par_dim<block_x>}
++    acc.compute_region launch(%arg0 = %w0) {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c8_inner = arith.constant 8 : index
++      scf.parallel (%iv) = (%c0) to (%c8_inner) step (%c1) {
++        scf.reduce
++      } {acc.par_dims = #acc<par_dims[block_x]>}
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=worker_loop | Remark="!$acc loop worker(4) ! threadidx.y"
++func.func @worker_loop() {
++  %c4 = arith.constant 4 : index
++  acc.kernel_environment {
++    %w0 = acc.par_width %c4 {par_dim = #acc.par_dim<thread_y>}
++    acc.compute_region launch(%arg0 = %w0) {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c8 = arith.constant 8 : index
++      scf.parallel (%iv) = (%c0) to (%c8) step (%c1) {
++        scf.reduce
++      } {acc.par_dims = #acc<par_dims[thread_y]>}
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=sequential_loop | Remark="!$acc loop sequential"
++func.func @sequential_loop() {
++  acc.kernel_environment {
++    acc.compute_region {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c4 = arith.constant 4 : index
++      scf.parallel (%iv) = (%c0) to (%c4) step (%c1) {
++        scf.reduce
++      } {acc.par_dims = #acc<par_dims[sequential]>}
++      acc.yield
++    } {origin = "acc.kernels"}
++  }
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=block_and_vector | Remark="!$acc loop gang(8), vector(128) ! blockidx.x threadidx.x"
++func.func @block_and_vector() {
++  %c8 = arith.constant 8 : index
++  %c128 = arith.constant 128 : index
++  acc.kernel_environment {
++    %w0 = acc.par_width %c8 {par_dim = #acc.par_dim<block_x>}
++    %w1 = acc.par_width %c128 {par_dim = #acc.par_dim<thread_x>}
++    acc.compute_region launch(%arg0 = %w0, %arg1 = %w1) {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c8_inner = arith.constant 8 : index
++      %c128_inner = arith.constant 128 : index
++      scf.parallel (%i, %j) = (%c0, %c0) to (%c8_inner, %c128_inner) step (%c1, %c1) {
++        scf.reduce
++      } {acc.par_dims = #acc<par_dims[block_x, thread_x]>}
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=scf_for_sequential | Remark="!$acc loop sequential"
++func.func @scf_for_sequential() {
++  acc.kernel_environment {
++    acc.compute_region {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c4 = arith.constant 4 : index
++      scf.for %iv = %c0 to %c4 step %c1 {
++      }
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}
++
++// -----
++
++// CHECK: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=collapse_loop | Remark="!$acc loop sequential collapse(2)"
++func.func @collapse_loop() {
++  acc.kernel_environment {
++    acc.compute_region {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c4 = arith.constant 4 : index
++      scf.for %iv = %c0 to %c4 step %c1 {
++      } {acc.par_dims = #acc<par_dims[sequential]>, acc.collapse_count = 2 : i64}
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}
++
++// -----
++
++// PERCENT: remark: [Passed] openacc | Category:acc-emit-remarks-loop | Function=percent_separator | Remark="!$acc loop vector(128) ! threadidx%x"
++func.func @percent_separator() {
++  %c128 = arith.constant 128 : index
++  acc.kernel_environment {
++    %w0 = acc.par_width %c128 {par_dim = #acc.par_dim<thread_x>}
++    acc.compute_region launch(%arg0 = %w0) {
++      %c0 = arith.constant 0 : index
++      %c1 = arith.constant 1 : index
++      %c128_inner = arith.constant 128 : index
++      scf.parallel (%iv) = (%c0) to (%c128_inner) step (%c1) {
++        scf.reduce
++      } {acc.par_dims = #acc<par_dims[thread_x]>}
++      acc.yield
++    } {origin = "acc.parallel"}
++  }
++  return
++}

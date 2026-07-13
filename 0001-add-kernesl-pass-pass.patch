@@ -1,0 +1,93 @@
+From 8c6771d48413abdc52b0cf0574a31ee6dd20656a Mon Sep 17 00:00:00 2001
+From: "ZhiQiang.Fan" <571253675@QQ.com>
+Date: Mon, 29 Jun 2026 11:42:09 +0800
+Subject: [PATCH] add kernesl pass pass
+
+---
+ flang/lib/Optimizer/Passes/Pipelines.cpp | 29 ++++++++++++++++++++++++
+ llvm/CMakeLists.txt                      | 18 ---------------
+ 2 files changed, 29 insertions(+), 18 deletions(-)
+
+diff --git a/flang/lib/Optimizer/Passes/Pipelines.cpp b/flang/lib/Optimizer/Passes/Pipelines.cpp
+index c6d531ce5076..ea5970405ad4 100644
+--- a/flang/lib/Optimizer/Passes/Pipelines.cpp
++++ b/flang/lib/Optimizer/Passes/Pipelines.cpp
+@@ -11,8 +11,10 @@
+ 
+ #include "flang/Optimizer/Passes/Pipelines.h"
+ #include "flang/Optimizer/OpenACC/Passes.h"
++#include "flang/Optimizer/Transforms/Passes.h"
+ #include "mlir/Conversion/Passes.h"
+ #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
++#include "mlir/Dialect/OpenACC/Transforms/Passes.h"
+ #include "mlir/Dialect/OpenMP/Transforms/Passes.h"
+ #include "llvm/Support/CommandLine.h"
+ 
+@@ -135,6 +137,33 @@ getFIRToLLVMPassOptions(const MLIRToLLVMPassPipelineConfig &config) {
+ 
+ void addFIRToLLVMPass(mlir::PassManager &pm,
+                       const MLIRToLLVMPassPipelineConfig &config) {
++  // ACC host fallback: convert ALL acc ops to host equivalents
++  mlir::acc::ACCSpecializeForHostOptions hostOpts;
++  hostOpts.enableHostFallback = true;
++  addNestedPassToAllTopLevelOperations(
++      pm, [&]() { return mlir::acc::createACCSpecializeForHost(hostOpts); });
++  // Materialize ACC private/firstprivate/reduction recipes before FIR->LLVM
++  // lowering, otherwise acc.private.recipe etc. reach LLVM translation and
++  // fail with "unsupported OpenACC operation".
++  addPassConditionally(pm, disableFirToLlvmIr,
++                       [&]() { return mlir::acc::createACCRecipeMaterialization(); });
++  if (!disableFirToLlvmIr)
++    addNestedPassToAllTopLevelOperations(
++        pm, [&]() { return fir::acc::createACCRecipeBufferizationPass(); });
++  // acc-compute-lowering: redundant — acc-specialize-for-host already converts
++  // acc.loop → scf.for and inlines acc.kernels. Kept commented for reference.
++  // if (!disableFirToLlvmIr)
++  //   addNestedPassToAllTopLevelOperations(
++  //       pm, [&]() { return mlir::acc::createACCComputeLowering(); }
++  //     );
++  // Convert SCF loops and FIR do_loop to CFG before FIR->LLVM lowering.
++  addPassConditionally(pm, disableFirToLlvmIr,
++                       [&]() { return mlir::createSCFToControlFlowPass(); });
++  // CFG conversion: safe now — acc-specialize-for-host removed compute_region
++  addPassConditionally(pm, disableFirToLlvmIr, [&]() {
++    fir::CFGConversionOptions cfgOpts;
++    return fir::createCFGConversion(cfgOpts);
++  });
+   fir::FIRToLLVMPassOptions options = getFIRToLLVMPassOptions(config);
+   addPassConditionally(pm, disableFirToLlvmIr,
+                        [&]() { return fir::createFIRToLLVMPass(options); });
+diff --git a/llvm/CMakeLists.txt b/llvm/CMakeLists.txt
+index ad69c4b719a3..afdf6fa15d14 100644
+--- a/llvm/CMakeLists.txt
++++ b/llvm/CMakeLists.txt
+@@ -576,26 +576,8 @@ set(LLVM_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/include)
+ 
+ # List of all targets to be built by default:
+ set(LLVM_ALL_TARGETS
+-  AArch64
+-  AMDGPU
+-  ARM
+-  AVR
+-  BPF
+-  Hexagon
+-  Lanai
+-  LoongArch
+-  Mips
+-  MSP430
+   NVPTX
+-  PowerPC
+-  RISCV
+-  Sparc
+-  SPIRV
+-  SystemZ
+-  VE
+-  WebAssembly
+   X86
+-  XCore
+   )
+ 
+ set(LLVM_ALL_EXPERIMENTAL_TARGETS
+-- 
+2.34.1
+

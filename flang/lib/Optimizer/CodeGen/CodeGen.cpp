@@ -13,6 +13,7 @@
 #include "flang/Optimizer/CodeGen/CodeGen.h"
 
 #include "flang/Optimizer/Builder/CUFCommon.h"
+#include "flang/Optimizer/CodeGen/CodeGenOpenACC.h"
 #include "flang/Optimizer/CodeGen/CodeGenOpenMP.h"
 #include "flang/Optimizer/CodeGen/FIROpPatterns.h"
 #include "flang/Optimizer/CodeGen/LLVMInsertChainFolder.h"
@@ -4858,6 +4859,12 @@ public:
     fir::LLVMTypeConverter typeConverter{getModule(),
                                          options.applyTBAA || applyTBAA,
                                          options.forceUnifiedTBAATree, *dl};
+    // Add conversion for OpenACC token types - keep them unchanged.
+    // This allows operations like DeclareExitOp with token operands to pass
+    // type conversion while their data operands are converted from FIR to LLVM.
+    typeConverter.addConversion([](mlir::acc::DeclareTokenType type) -> mlir::Type {
+      return type;
+    });
     mlir::RewritePatternSet pattern(context);
     fir::populateFIRToLLVMConversionPatterns(typeConverter, pattern, options);
     mlir::populateFuncToLLVMConversionPatterns(typeConverter, pattern);
@@ -4879,6 +4886,10 @@ public:
     // handling of things like Box types.
     fir::populateOpenMPFIRToLLVMConversionPatterns(typeConverter, pattern);
 
+    // Flang specific overloads for OpenACC operations, to convert FIR types
+    // (e.g., !fir.ref<!fir.array<...>>) to LLVM ptr types.
+    fir::populateOpenACCFIRToLLVMConversionPatterns(typeConverter, pattern);
+
     mlir::ConversionTarget target{*context};
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     // The OpenMP dialect is legal for Operations without regions, for those
@@ -4887,7 +4898,9 @@ public:
     // legalize conversion of OpenMP operations without regions.
     mlir::configureOpenMPToLLVMConversionLegality(target, typeConverter);
     target.addLegalDialect<mlir::omp::OpenMPDialect>();
-    target.addLegalDialect<mlir::acc::OpenACCDialect>();
+    // The OpenACC dialect data clause operations are legal when their
+    // operand and result types are LLVM types.
+    fir::configureOpenACCToLLVMConversionLegality(target, typeConverter);
     target.addLegalDialect<mlir::gpu::GPUDialect>();
 
     // required NOPs for applying a full conversion
