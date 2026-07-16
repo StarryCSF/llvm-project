@@ -2025,20 +2025,29 @@ static void deinitAccRuntime() {
 
   deinitRuntime();
 }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wglobal-constructors"
+__attribute__((constructor))
+static void accRuntimeAutoInit() {
+  std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
+  FUNC_LOGGER();
+  initAccRuntime();
+}
+
+__attribute__((destructor))
+static void accRuntimeAutoDeinit() {
+  std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
+  FUNC_LOGGER();
+  deinitAccRuntime();
+}
 } // namespace
 
 EXTERN void __tgt_acc_init(ident_t *Loc, int64_t Flags, int64_t DeviceType,
                            int64_t DeviceNum) {
   std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
   FUNC_LOGGER(Loc);
-  REPORT_WARN() << "acc init ignores user's request and initializes all "
-                   "available devices.";
-  initAccRuntime();
-  std::atexit([]() {
-    std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
-    FUNC_LOGGER();
-    deinitAccRuntime();
-  });
+  REPORT_WARN() << "acc init is ignored";
 }
 
 EXTERN void __tgt_acc_shutdown(ident_t *Loc, int64_t Flags, int64_t DeviceType,

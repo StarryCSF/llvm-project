@@ -664,5 +664,6 @@ EXTERN void __tgt_register_rpc_callback(unsigned (*Callback)(void *,
 
   for (auto &Plugin : PM->plugins())
     if (Plugin.is_initialized())
-      Plugin.getRPCServer().registerCallback(Callback);
+      if (auto *RPCServer = Plugin.getRPCServerOrNull())
+        RPCServer->registerCallback(Callback);
 }

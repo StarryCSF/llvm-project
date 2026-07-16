@@ -1536,6 +1536,9 @@ struct GenericPluginTy {
   /// plugin.
   JITEngine &getJIT() { return JIT; }
 
+  /// Get the RPC server without assert.
+  RPCServerTy *getRPCServerOrNull() const { return RPCServer; }
+
   /// Get a reference to the RPC server used to provide host services.
   RPCServerTy &getRPCServer() {
     assert(RPCServer && "RPC server not initialized");
