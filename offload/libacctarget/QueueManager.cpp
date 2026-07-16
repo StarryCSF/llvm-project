@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "QueueManager.h"
+#include "openacc.h"
 #include "PluginManager.h"
 #include "Private.h"
 #include "Shared/Debug.h"
@@ -16,6 +17,12 @@ QueueManagerTy *QueueManager = nullptr;
 } // namespace llvm::acc::target
 
 using namespace llvm::acc::target;
+
+static int64_t resolveAsyncArg(int64_t AsyncArg) {
+  if (AsyncArg == acc_async_default)
+    return icv::AccDefaultAsyncVar;
+  return AsyncArg;
+}
 
 static void synchronizeQueueOrDie(QueueIdTy Queue, DeviceTy &Device,
                                   AsyncInfoTy *AsyncInfo) {
@@ -107,6 +114,85 @@ AsyncInfoTy *QueueManagerTy::get(DeviceTy &Device, QueueIdTy QueueId) {
   return Insertion.first->second.get();
 }
 
+void QueueManagerTy::waitAsync(DeviceTy &Device, AsyncInfoTy &SrcAsyncInfo,
+                               AsyncInfoTy &DstAsyncInfo) {
+  // Waiting on the same stream is a no-op.
+  if (&SrcAsyncInfo == &DstAsyncInfo)
+    return;
+
+  void *Event = nullptr;
+  if (Device.createEvent(&Event) != OFFLOAD_SUCCESS) {
+    REPORT() << "Failed to create event for async wait";
+    return;
+  }
+  // Backends that do not materialize events return a null event and make
+  // record/wait no-ops; in that case there is nothing to enqueue.
+  if (!Event)
+    return;
+
+  if (Device.recordEvent(Event, SrcAsyncInfo) != OFFLOAD_SUCCESS) {
+    REPORT() << "Failed to record event " << Event;
+    Device.destroyEvent(Event);
+    return;
+  }
+
+  if (Device.waitEvent(Event, DstAsyncInfo) != OFFLOAD_SUCCESS) {
+    REPORT() << "Failed to enqueue wait for event " << Event;
+    Device.destroyEvent(Event);
+    return;
+  }
+
+  // The event is no longer needed once the destination stream has advanced
+  // past the wait point, i.e. after the destination stream is synchronized.
+  // Destroying it via a post-processing function avoids returning an
+  // in-flight event to the backend's event pool.
+  DstAsyncInfo.addPostProcessingFunction(
+      [&Device, Event]() -> int { return Device.destroyEvent(Event); });
+}
+
+void QueueManagerTy::waitAllAsync(DeviceTy &Device, AsyncInfoTy &DstAsyncInfo) {
+  // Snapshot the source streams belonging to this device so the QueueMap is
+  // not traversed while events are being recorded.
+  SmallVector<AsyncInfoTy *, 8> SrcStreams;
+  for (auto &[Key, Q] : QueueMap) {
+    auto &[D, Id] = Key;
+    if (D != &Device)
+      continue;
+    if (Q.get() == &DstAsyncInfo)
+      continue;
+    SrcStreams.push_back(Q.get());
+  }
+
+  for (AsyncInfoTy *SrcAsyncInfo : SrcStreams)
+    waitAsync(Device, *SrcAsyncInfo, DstAsyncInfo);
+}
+
+void QueueManagerTy::waitAllAsyncAllDevices(QueueIdTy DstQueue) {
+  // Resolve each device's own destination stream lazily.
+  SmallVector<std::pair<DeviceTy *, AsyncInfoTy *>, 8> DstByDevice;
+  auto findDst = [&](DeviceTy *D) -> AsyncInfoTy * {
+    for (auto &KV : DstByDevice)
+      if (KV.first == D)
+        return KV.second;
+    return nullptr;
+  };
+
+  for (auto &[Key, Q] : QueueMap) {
+    auto &[D, Id] = Key;
+    if (findDst(D))
+      continue;
+    DstByDevice.emplace_back(D, get(*D, DstQueue));
+  }
+
+  for (auto &[Key, Q] : QueueMap) {
+    auto &[D, Id] = Key;
+    AsyncInfoTy *DstAsyncInfo = findDst(D);
+    if (Q.get() == DstAsyncInfo)
+      continue;
+    waitAsync(*D, *Q, *DstAsyncInfo);
+  }
+}
+
 namespace llvm::acc::target {
 void accAsyncWait(ident_t *Loc, int64_t DeviceId, int64_t WaitArg) {
   int64_t WaitArgs[] = {WaitArg};
@@ -141,6 +227,77 @@ void accAsyncWaitAll(ident_t *Loc, int64_t DeviceId) {
 void accAsyncWaitAll(ident_t *Loc) {
   ODBG() << "Synchronizing all streams";
   QueueManager->synchronize();
+}
+
+void accAsyncWaitAsync(ident_t *Loc, int64_t DeviceId, int64_t WaitArg,
+                       int64_t AsyncArg) {
+  int64_t WaitArgs[] = {WaitArg};
+  accAsyncWaitAsync(Loc, DeviceId, 1, WaitArgs, AsyncArg);
+}
+
+void accAsyncWaitAsync(ident_t *Loc, int64_t DeviceId, uint32_t WaitNum,
+                       int64_t *WaitList, int64_t AsyncArg) {
+  ODBG() << "Asynchronously waiting on streams for device " << DeviceId
+         << " via async " << AsyncArg;
+
+  // acc_async_sync means perform a blocking wait instead.
+  if (AsyncArg == acc_async_sync) {
+    accAsyncWait(Loc, DeviceId, WaitNum, WaitList);
+    return;
+  }
+
+  AsyncArg = resolveAsyncArg(AsyncArg);
+
+  auto DeviceOrErr = PM->getDevice(DeviceId);
+  if (!DeviceOrErr)
+    FATAL_MESSAGE(DeviceId, "%s",
+                  toString(DeviceOrErr.takeError()).c_str());
+  DeviceTy &Device = *DeviceOrErr;
+
+  if (WaitNum == 0)
+    return;
+
+  AsyncInfoTy *DstAsyncInfo =
+      QueueManager->get(Device, static_cast<QueueIdTy>(AsyncArg));
+
+  for (unsigned I = 0; I < WaitNum; I++) {
+    AsyncInfoTy *SrcAsyncInfo =
+        QueueManager->get(Device, static_cast<QueueIdTy>(WaitList[I]));
+    QueueManager->waitAsync(Device, *SrcAsyncInfo, *DstAsyncInfo);
+  }
+}
+
+void accAsyncWaitAllAsync(ident_t *Loc, int64_t DeviceId, int64_t AsyncArg) {
+  ODBG() << "Asynchronously waiting on all streams for device " << DeviceId
+         << " via async " << AsyncArg;
+
+  if (AsyncArg == acc_async_sync) {
+    accAsyncWaitAll(Loc, DeviceId);
+    return;
+  }
+
+  AsyncArg = resolveAsyncArg(AsyncArg);
+
+  auto DeviceOrErr = PM->getDevice(DeviceId);
+  if (!DeviceOrErr)
+    FATAL_MESSAGE(DeviceId, "%s",
+                  toString(DeviceOrErr.takeError()).c_str());
+  DeviceTy &Device = *DeviceOrErr;
+
+  AsyncInfoTy *DstAsyncInfo =
+      QueueManager->get(Device, static_cast<QueueIdTy>(AsyncArg));
+  QueueManager->waitAllAsync(Device, *DstAsyncInfo);
+}
+
+void accAsyncWaitAllAsync(ident_t *Loc, int64_t AsyncArg) {
+  ODBG() << "Asynchronously waiting on all streams via async " << AsyncArg;
+
+  if (AsyncArg == acc_async_sync) {
+    accAsyncWaitAll(Loc);
+    return;
+  }
+
+  QueueManager->waitAllAsyncAllDevices(static_cast<QueueIdTy>(resolveAsyncArg(AsyncArg)));
 }
 
 int accAsyncTest(ident_t *Loc, int64_t DeviceId, int64_t TestArg) {

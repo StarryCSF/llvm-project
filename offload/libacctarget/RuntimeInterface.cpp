@@ -78,10 +78,10 @@ void acc_async_wait(int WaitArg) {
 }
 void acc_async_wait_(int *WaitArg) { acc_async_wait(*WaitArg); }
 
-void acc_wait_async(int WaitArg) {
-  accAsyncWait(nullptr, DM->getPMDeviceId(), WaitArg);
+void acc_wait_async(int WaitArg, int Async) {
+  accAsyncWaitAsync(nullptr, DM->getPMDeviceId(), WaitArg, Async);
 }
-void acc_wait_async_(int *WaitArg) { acc_wait_async(*WaitArg); }
+void acc_wait_async_(int *WaitArg, int *Async) { acc_wait_async(*WaitArg, *Async); }
 
 void acc_wait(int WaitArg) {
   accAsyncWait(nullptr, DM->getPMDeviceId(), WaitArg);
@@ -95,8 +95,8 @@ void acc_wait_device_(int *WaitArg, int *DevNum) {
   acc_wait_device(*WaitArg, *DevNum);
 }
 
-void acc_wait_all_async() { accAsyncWaitAll(nullptr); }
-void acc_wait_all_async_() { acc_wait_all_async(); }
+void acc_wait_all_async(int Async) { accAsyncWaitAllAsync(nullptr, Async); }
+void acc_wait_all_async_(int *Async) { acc_wait_all_async(*Async); }
 
 void acc_async_wait_all() { accAsyncWaitAll(nullptr); }
 void acc_async_wait_all_() { acc_async_wait_all(); }

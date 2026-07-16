@@ -35,6 +35,23 @@ public:
   StatusTy query(DeviceTy &Device);
   StatusTy query();
 
+  /// Asynchronously insert a wait dependency from \p SrcAsyncInfo into
+  /// \p DstAsyncInfo using an event. This is non-blocking for the host:
+  /// subsequent work enqueued on \p DstAsyncInfo will not start until the
+  /// pending operations on \p SrcAsyncInfo complete. The temporary event is
+  /// destroyed once \p DstAsyncInfo is later synchronized.
+  void waitAsync(DeviceTy &Device, AsyncInfoTy &SrcAsyncInfo,
+                 AsyncInfoTy &DstAsyncInfo);
+
+  /// Asynchronously insert wait dependencies from every stream of \p Device
+  /// (except \p DstAsyncInfo itself) into \p DstAsyncInfo.
+  void waitAllAsync(DeviceTy &Device, AsyncInfoTy &DstAsyncInfo);
+
+  /// Asynchronously insert wait dependencies from every stream of every
+  /// device that currently has streams into each device's own \p DstQueue
+  /// stream. Avoids cross-device event dependencies.
+  void waitAllAsyncAllDevices(QueueIdTy DstQueue);
+
 private:
   std::map<std::pair<DeviceTy *, QueueIdTy>, std::unique_ptr<AsyncInfoTy>>
       QueueMap;
@@ -62,6 +79,12 @@ void accAsyncWait(ident_t *Loc, int64_t DeviceId, uint32_t WaitNum,
                   int64_t *WaitList);
 void accAsyncWaitAll(ident_t *Loc, int64_t DeviceId);
 void accAsyncWaitAll(ident_t *Loc);
+void accAsyncWaitAsync(ident_t *Loc, int64_t DeviceId, int64_t WaitArg,
+                       int64_t AsyncArg);
+void accAsyncWaitAsync(ident_t *Loc, int64_t DeviceId, uint32_t WaitNum,
+                       int64_t *WaitList, int64_t AsyncArg);
+void accAsyncWaitAllAsync(ident_t *Loc, int64_t DeviceId, int64_t AsyncArg);
+void accAsyncWaitAllAsync(ident_t *Loc, int64_t AsyncArg);
 int accAsyncTest(ident_t *Loc, int64_t DeviceId, int64_t TestArg);
 int accAsyncTest(ident_t *Loc, int64_t DeviceId, uint32_t TestNum,
                  int64_t *TestList);
