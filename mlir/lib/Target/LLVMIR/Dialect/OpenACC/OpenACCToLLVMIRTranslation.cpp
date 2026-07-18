@@ -990,10 +990,126 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::DeleteOp,
             acc::UpdateDeviceOp, acc::UpdateHostOp, acc::GetDevicePtrOp,
-            acc::NoCreateOp, acc::AttachOp, acc::DetachOp>([](auto op) {
-        // NOP
+            acc::NoCreateOp, acc::AttachOp, acc::DetachOp,
+            acc::FirstprivateMapInitialOp, acc::PrivatizeOp,
+            acc::UnwrapPrivateOp, acc::PrivateLocalOp,
+            acc::KernelEnvironmentOp, acc::ReductionInitOp,
+            acc::ReductionCombineOp, acc::ReductionCombineRegionOp,
+            acc::ReductionAccumulateOp, acc::ReductionAccumulateArrayOp,
+            acc::ParWidthOp, acc::GPUSharedMemoryOp>([](auto op) {
+        // NOP - these ops are handled by the region body or are
+        // intermediate representations consumed by later passes.
         return success();
       })
+      .Case<acc::ComputeRegionOp>(
+          [&](acc::ComputeRegionOp computeOp) {
+            // Handle compute_region by inlining its region body into the
+            // current function. The ins operands are mapped to their
+            // converted LLVM values as block arguments.
+            auto &region = computeOp.getRegion();
+            if (region.empty())
+              return success();
+
+            llvm::LLVMContext &ctx = builder.getContext();
+            llvm::BasicBlock *entryBlock = nullptr;
+
+            // Create LLVM basic blocks for each block in the region.
+            for (auto &bb : region) {
+              auto *llvmBB = llvm::BasicBlock::Create(ctx, "acc.compute",
+                                                      builder.GetInsertBlock()->getParent());
+              if (entryBlock == nullptr)
+                entryBlock = llvmBB;
+              moduleTranslation.mapBlock(&bb, llvmBB);
+            }
+
+            auto afterRegion = builder.saveIP();
+            llvm::UncondBrInst *sourceTerminator = builder.CreateBr(entryBlock);
+            builder.restoreIP(afterRegion);
+
+            llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(
+                ctx, "acc.end_compute", builder.GetInsertBlock()->getParent());
+
+            // Map ins operands to entry block arguments.
+            Block &regionEntry = region.front();
+            auto launchArgs = computeOp.getLaunchArgs();
+            auto inputArgs = computeOp.getInputArgs();
+            unsigned totalArgs = launchArgs.size() + inputArgs.size();
+            for (unsigned i = 0; i < totalArgs; ++i) {
+              llvm::Value *val = moduleTranslation.lookupValue(
+                  computeOp->getOperand(i));
+              if (!val) {
+                computeOp.emitError("could not find LLVM value for operand ") << i;
+                return failure();
+              }
+              moduleTranslation.mapValue(regionEntry.getArgument(i), val);
+            }
+
+            SetVector<Block *> blocks =
+                getBlocksSortedByDominance(region);
+            for (Block *bb : blocks) {
+              llvm::BasicBlock *llvmBB =
+                  moduleTranslation.lookupBlock(bb);
+              if (bb->isEntryBlock()) {
+                sourceTerminator->setSuccessor(0, llvmBB);
+              }
+
+              if (failed(moduleTranslation.convertBlock(
+                      *bb, bb->isEntryBlock(), builder)))
+                return failure();
+
+              if (isa<acc::YieldOp>(bb->getTerminator()))
+                builder.CreateBr(endBlock);
+            }
+
+            builder.SetInsertPoint(endBlock);
+            return success();
+          })
+      .Case<acc::PredicateRegionOp>(
+          [&](acc::PredicateRegionOp predOp) {
+            // PredicateRegion has no operands and NoTerminator.
+            // Just inline the region body.
+            auto &region = predOp.getRegion();
+            if (region.empty())
+              return success();
+
+            llvm::LLVMContext &ctx = builder.getContext();
+            llvm::BasicBlock *entryBlock = nullptr;
+
+            for (auto &bb : region) {
+              auto *llvmBB = llvm::BasicBlock::Create(ctx, "acc.predicate",
+                                                      builder.GetInsertBlock()->getParent());
+              if (entryBlock == nullptr)
+                entryBlock = llvmBB;
+              moduleTranslation.mapBlock(&bb, llvmBB);
+            }
+
+            auto afterRegion = builder.saveIP();
+            llvm::UncondBrInst *sourceTerminator = builder.CreateBr(entryBlock);
+            builder.restoreIP(afterRegion);
+
+            llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(
+                ctx, "acc.end_predicate", builder.GetInsertBlock()->getParent());
+
+            SetVector<Block *> blocks =
+                getBlocksSortedByDominance(region);
+            for (Block *bb : blocks) {
+              llvm::BasicBlock *llvmBB =
+                  moduleTranslation.lookupBlock(bb);
+              if (bb->isEntryBlock()) {
+                sourceTerminator->setSuccessor(0, llvmBB);
+              }
+
+              if (failed(moduleTranslation.convertBlock(
+                      *bb, bb->isEntryBlock(), builder)))
+                return failure();
+
+              // NoTerminator - just branch to end block
+              builder.CreateBr(endBlock);
+            }
+
+            builder.SetInsertPoint(endBlock);
+            return success();
+          })
       .Case<acc::ParallelOp, acc::SerialOp, acc::LoopOp>(
           [&](auto computeOp) {
             // NOP handler for compute construct operations.

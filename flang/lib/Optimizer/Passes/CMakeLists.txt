@@ -23,6 +23,8 @@ add_flang_library(flangPasses
   MLIRLLVMIRTransforms
   MLIRMathToFuncs
   MLIRMathToLLVM
+  MLIROpenACCToSCF
+  MLIROpenACCTransforms
   MLIRPass
   MLIRReconcileUnrealizedCasts
   MLIRSCFToControlFlow

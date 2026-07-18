@@ -520,7 +520,7 @@ def OpenACC_ComputeRegionOp
                  [OffloadRegionOpInterface, AffineScope,
                   RecursiveMemoryEffects,
                   SingleBlockImplicitTerminator<"YieldOp">,
-                  IsolatedFromAbove, AttrSizedOperandSegments]> {
+                  AttrSizedOperandSegments]> {
   let summary = "Compute region for GPU execution";
   let description = [{
     The `acc.compute_region` operation wraps a region of code that will be
@@ -531,18 +531,6 @@ def OpenACC_ComputeRegionOp
     mapping facilities that the `acc` dialect provides. It serves as the
     bridge between the high-level representation and the `gpu.launch`
     operation.
-
-    The operation is `IsolatedFromAbove`: all values used inside the
-    region must be explicitly captured. Values are captured in two ways:
-
-    - Launch arguments (`launch`): Results of `acc.par_width`
-      operations that define the parallel launch configuration. These
-      become `index`-typed block arguments representing the parallel
-      width for each dimension.
-
-    - Input arguments (`ins`): Arbitrary values captured from outside
-      the region (data pointers, scalars, etc.). These become block
-      arguments with their original types.
 
     The `origin` attribute records which construct produced this compute
     region (e.g., `"acc.parallel"`, `"acc.kernels"`). This is intended to

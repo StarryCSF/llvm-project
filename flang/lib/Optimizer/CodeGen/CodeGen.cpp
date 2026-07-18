@@ -4865,6 +4865,11 @@ public:
     typeConverter.addConversion([](mlir::acc::DeclareTokenType type) -> mlir::Type {
       return type;
     });
+    // acc.private_type<T> converts to LLVM ptr (opaque pointer to private storage)
+    typeConverter.addConversion(
+        [](mlir::acc::PrivateType type) -> mlir::Type {
+          return mlir::LLVM::LLVMPointerType::get(type.getContext());
+        });
     mlir::RewritePatternSet pattern(context);
     fir::populateFIRToLLVMConversionPatterns(typeConverter, pattern, options);
     mlir::populateFuncToLLVMConversionPatterns(typeConverter, pattern);

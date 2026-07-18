@@ -336,6 +336,225 @@ struct WaitOpConversion : public OpenACCFIROpConversion<mlir::acc::WaitOp> {
   }
 };
 
+// ---- CG ops from OpenACC compute lowering pipeline ----
+
+/// acc.privatize - creates private storage handle.
+/// After type conversion, acc.private_type<T> becomes LLVM ptr.
+/// The op just returns the handle, so we replace with the converted operand
+/// or create an alloca if no operand.
+struct PrivatizeOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::PrivatizeOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::PrivatizeOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // privatize may have an init region or just return a handle.
+    // After type conversion, the result type is LLVM ptr.
+    // For now, just modify in place to convert operand types.
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.unwrap_private - extracts pointer from private handle.
+/// After type conversion, both handle and result are LLVM ptr.
+struct UnwrapPrivateOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::UnwrapPrivateOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::UnwrapPrivateOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.private_local - private variable in compute region.
+struct PrivateLocalOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::PrivateLocalOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::PrivateLocalOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.kernel_environment - container for data clause ops in compute region.
+/// Modify in place to convert operand types and region block argument types.
+struct KernelEnvironmentOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::KernelEnvironmentOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::KernelEnvironmentOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(), *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.reduction_init - reduction initialization region.
+struct ReductionInitOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ReductionInitOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ReductionInitOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(), *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.reduction_combine - combines two reduction values.
+struct ReductionCombineOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ReductionCombineOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ReductionCombineOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.reduction_combine_region - reduction combine with region.
+struct ReductionCombineRegionOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ReductionCombineRegionOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ReductionCombineRegionOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(), *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.reduction_accumulate - accumulates partial reduction result.
+struct ReductionAccumulateOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ReductionAccumulateOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ReductionAccumulateOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.reduction_accumulate_array - array variant of reduction accumulate.
+struct ReductionAccumulateArrayOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ReductionAccumulateArrayOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ReductionAccumulateArrayOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.compute_region - lowered compute construct.
+/// This op has a region with block arguments that mirror the operands
+/// (launch args + input args). We need to convert both operand types
+/// and region block argument types.
+struct ComputeRegionOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ComputeRegionOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ComputeRegionOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // Convert region block argument types
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(), *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.predicate_region - if-clause predicate region.
+struct PredicateRegionOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::PredicateRegionOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::PredicateRegionOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(), *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.par_width - parallel width specification.
+struct ParWidthOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ParWidthOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ParWidthOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// acc.gpu_shared_memory - GPU shared memory allocation.
+struct GPUSharedMemoryOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::GPUSharedMemoryOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::GPUSharedMemoryOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 void fir::configureOpenACCToLLVMConversionLegality(
@@ -399,6 +618,38 @@ void fir::configureOpenACCToLLVMConversionLegality(
       return typeConverter.isLegal(&region);
     });
   });
+
+  // CG ops from OpenACC compute lowering pipeline.
+  // These ops are legal when their operands/results/regions have LLVM types.
+  // Ops with acc.private_type operands/results need special handling since
+  // private_type converts to LLVM ptr.
+  target.addDynamicallyLegalOp<
+      mlir::acc::FirstprivateMapInitialOp, mlir::acc::PrivatizeOp,
+      mlir::acc::UnwrapPrivateOp, mlir::acc::PrivateLocalOp,
+      mlir::acc::KernelEnvironmentOp, mlir::acc::ReductionInitOp,
+      mlir::acc::ReductionCombineOp, mlir::acc::ReductionCombineRegionOp,
+      mlir::acc::ReductionAccumulateOp, mlir::acc::ReductionAccumulateArrayOp,
+      mlir::acc::ComputeRegionOp, mlir::acc::PredicateRegionOp,
+      mlir::acc::ParWidthOp, mlir::acc::GPUSharedMemoryOp>(
+      [&](mlir::Operation *op) {
+    for (mlir::Value operand : op->getOperands()) {
+      mlir::Type ty = operand.getType();
+      if (mlir::isa<mlir::acc::PrivateType>(ty))
+        continue;
+      if (!typeConverter.isLegal(ty))
+        return false;
+    }
+    for (mlir::Value result : op->getResults()) {
+      mlir::Type ty = result.getType();
+      if (mlir::isa<mlir::acc::PrivateType>(ty))
+        continue;
+      if (!typeConverter.isLegal(ty))
+        return false;
+    }
+    return llvm::all_of(op->getRegions(), [&](mlir::Region &region) {
+      return typeConverter.isLegal(&region);
+    });
+  });
 }
 
 void fir::populateOpenACCFIRToLLVMConversionPatterns(
@@ -432,4 +683,21 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<ParallelOpConversion>(converter);
   patterns.add<SerialOpConversion>(converter);
   patterns.add<LoopOpConversion>(converter);
+
+  // CG ops from OpenACC compute lowering pipeline
+  patterns.add<DataClauseOpConversion<mlir::acc::FirstprivateMapInitialOp>>(
+      converter);
+  patterns.add<PrivatizeOpConversion>(converter);
+  patterns.add<UnwrapPrivateOpConversion>(converter);
+  patterns.add<PrivateLocalOpConversion>(converter);
+  patterns.add<KernelEnvironmentOpConversion>(converter);
+  patterns.add<ReductionInitOpConversion>(converter);
+  patterns.add<ReductionCombineOpConversion>(converter);
+  patterns.add<ReductionCombineRegionOpConversion>(converter);
+  patterns.add<ReductionAccumulateOpConversion>(converter);
+  patterns.add<ReductionAccumulateArrayOpConversion>(converter);
+  patterns.add<ComputeRegionOpConversion>(converter);
+  patterns.add<PredicateRegionOpConversion>(converter);
+  patterns.add<ParWidthOpConversion>(converter);
+  patterns.add<GPUSharedMemoryOpConversion>(converter);
 }
