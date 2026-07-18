@@ -165,6 +165,86 @@ struct HostDataOpConversion
   }
 };
 
+/// Conversion pattern for acc.parallel operation.
+/// Converts dataClauseOperands and region block argument types.
+struct ParallelOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::ParallelOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::ParallelOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+      // Convert region block argument types
+      if (!curOp.getRegion().empty()) {
+        mlir::Block &block = curOp.getRegion().front();
+        for (unsigned i = 0; i < block.getNumArguments(); ++i) {
+          mlir::BlockArgument arg = block.getArgument(i);
+          mlir::Type convertedType = this->getTypeConverter()->convertType(arg.getType());
+          if (!convertedType)
+            return;
+          block.getArgument(i).setType(convertedType);
+        }
+      }
+    });
+    return mlir::success();
+  }
+};
+
+/// Conversion pattern for acc.serial operation.
+/// Converts dataClauseOperands and region block argument types.
+struct SerialOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::SerialOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::SerialOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+      // Convert region block argument types
+      if (!curOp.getRegion().empty()) {
+        mlir::Block &block = curOp.getRegion().front();
+        for (unsigned i = 0; i < block.getNumArguments(); ++i) {
+          mlir::BlockArgument arg = block.getArgument(i);
+          mlir::Type convertedType = this->getTypeConverter()->convertType(arg.getType());
+          if (!convertedType)
+            return;
+          block.getArgument(i).setType(convertedType);
+        }
+      }
+    });
+    return mlir::success();
+  }
+};
+
+/// Conversion pattern for acc.loop operation.
+/// Converts dataClauseOperands and region block argument types.
+struct LoopOpConversion : public OpenACCFIROpConversion<mlir::acc::LoopOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::LoopOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+      // Convert region block argument types
+      if (!curOp.getRegion().empty()) {
+        mlir::Block &block = curOp.getRegion().front();
+        for (unsigned i = 0; i < block.getNumArguments(); ++i) {
+          mlir::BlockArgument arg = block.getArgument(i);
+          mlir::Type convertedType = this->getTypeConverter()->convertType(arg.getType());
+          if (!convertedType)
+            return;
+          block.getArgument(i).setType(convertedType);
+        }
+      }
+    });
+    return mlir::success();
+  }
+};
+
 /// Conversion pattern for acc.declare_enter operation.
 /// Converts dataClauseOperands from FIR types to LLVM types.
 struct DeclareEnterOpConversion
@@ -282,6 +362,18 @@ void fir::configureOpenACCToLLVMConversionLegality(
            });
   });
 
+  // OpenACC compute construct operations (parallel/serial/loop) are legal when
+  // their operand, result, and region types are LLVM types.
+  target.addDynamicallyLegalOp<
+      mlir::acc::ParallelOp, mlir::acc::SerialOp, mlir::acc::LoopOp>(
+      [&](mlir::Operation *op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes()) &&
+           llvm::all_of(op->getRegions(), [&](mlir::Region &region) {
+             return typeConverter.isLegal(&region);
+           });
+  });
+
   // DeclareEnterOp/DeclareExitOp have acc.declare_token result/operand
   // which is an OpenACC dialect type and should remain legal.
   target.addDynamicallyLegalOp<mlir::acc::DeclareEnterOp, mlir::acc::DeclareExitOp>(
@@ -337,4 +429,7 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<ShutdownOpConversion>(converter);
   patterns.add<SetOpConversion>(converter);
   patterns.add<WaitOpConversion>(converter);
+  patterns.add<ParallelOpConversion>(converter);
+  patterns.add<SerialOpConversion>(converter);
+  patterns.add<LoopOpConversion>(converter);
 }

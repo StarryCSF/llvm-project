@@ -994,6 +994,14 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         // NOP
         return success();
       })
+      .Case<acc::ParallelOp, acc::SerialOp, acc::LoopOp>(
+          [&](auto computeOp) {
+            // NOP handler for compute construct operations.
+            // The region body is handled by convertBlock at the enclosing
+            // function level. These ops do not generate runtime calls yet
+            // (a future bridge pass will lower them to GPU ops).
+            return success();
+          })
       .Default([&](Operation *op) {
         return op->emitError("unsupported OpenACC operation: ")
                << op->getName();
