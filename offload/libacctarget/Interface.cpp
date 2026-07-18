@@ -1593,6 +1593,11 @@ void accTargetDataUpdate(ident_t *Loc, void *ArgBasePtr, void *ArgPtr,
 
 template <typename T>
 void withDeviceAndQueue(int64_t DeviceType, int64_t Async, T Callback) {
+  // Lazy initialization: auto-initialize runtime if not already initialized
+  if (!llvm::acc::target::DM) {
+    __tgt_acc_init(nullptr, 0, DeviceType, -1);
+  }
+  
   llvm::Expected<DeviceTy &> DeviceOrErr =
       DM->getDevice(static_cast<acc_device_t>(DeviceType));
   if (!DeviceOrErr)
@@ -1627,8 +1632,9 @@ void forEachArg(FuncTy Func, bool Increasing, ident_t *Loc, uint32_t ArgNum,
   for (int32_t I = Start; I != End; I += Increment) {
     ODBG(ADT_Interface) << "Handling arg #" << I;
     char *Name = ArgNames ? ArgNames[I] : nullptr;
+    AccDataDesc *ArgDesc = ArgDescs ? ArgDescs[I] : nullptr;
     Func(Loc, ArgBasePtrs[I], ArgPtrs[I], ArgSizes[I], ArgTypes[I], Name,
-         ArgDescs[I], Args...);
+         ArgDesc, Args...);
   }
 }
 } // namespace

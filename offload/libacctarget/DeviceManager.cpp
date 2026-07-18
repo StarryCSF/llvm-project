@@ -176,8 +176,19 @@ void DeviceManagerTy::checkICVs() {
   // }
   ODBG() << "acc-current-device-type = " << icv::AccCurrentDeviceTypeVar;
   assert(icv::AccCurrentDeviceTypeVar == acc_device_default ||
+         icv::AccCurrentDeviceTypeVar == acc_device_host ||
+         icv::AccCurrentDeviceTypeVar == acc_device_not_host ||
          (icv::AccCurrentDeviceTypeVar >= acc_device_concrete_type_begin &&
           icv::AccCurrentDeviceTypeVar < acc_device_concrete_type_end));
+  
+  // Also check AccCurrentDefaultDeviceTypeVar if current is default
+  if (icv::AccCurrentDeviceTypeVar == acc_device_default) {
+    assert(icv::AccCurrentDefaultDeviceTypeVar == acc_device_none ||
+           icv::AccCurrentDefaultDeviceTypeVar == acc_device_host ||
+           icv::AccCurrentDefaultDeviceTypeVar == acc_device_not_host ||
+           (icv::AccCurrentDefaultDeviceTypeVar >= acc_device_concrete_type_begin &&
+            icv::AccCurrentDefaultDeviceTypeVar < acc_device_concrete_type_end));
+  }
   acc_device_t DeviceType = icv::AccCurrentDeviceTypeVar;
   if (DeviceType == acc_device_default) {
     DeviceType = icv::AccCurrentDefaultDeviceTypeVar;
@@ -217,13 +228,21 @@ acc_device_t DeviceManagerTy::getDeviceType() {
   if (DeviceType == acc_device_default)
     DeviceType = icv::AccCurrentDefaultDeviceTypeVar;
 
-  assert(DeviceType != acc_device_current && DeviceType != acc_device_default &&
-         DeviceType != acc_device_not_host);
+  // Allow acc_device_none (initial state before init)
+  // acc_device_current and acc_device_not_host are not valid return values
+  assert(DeviceType == acc_device_none ||
+         DeviceType == acc_device_host ||
+         (DeviceType >= acc_device_concrete_type_begin &&
+          DeviceType < acc_device_concrete_type_end));
 
   return DeviceType;
 }
 
 void DeviceManagerTy::setDeviceType(acc_device_t DeviceType) {
+  // Ignore invalid device types (e.g., acc_device_none from uninitialized state)
+  if (DeviceType == acc_device_none)
+    return;
+  
   icv::AccCurrentDeviceTypeVar = DeviceType;
   checkICVs();
 }

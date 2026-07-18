@@ -28,18 +28,213 @@ using namespace mlir;
 using OpenACCIRBuilder = llvm::OpenMPIRBuilder;
 
 //===----------------------------------------------------------------------===//
+// OpenACC Runtime Function Declarations
+//===----------------------------------------------------------------------===//
+
+/// Get or create __tgt_acc_init function declaration.
+static llvm::Function *getAccInitFunction(llvm::Module &module,
+                                           llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_init",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_shutdown function declaration.
+static llvm::Function *getAccShutdownFunction(llvm::Module &module,
+                                               llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_shutdown",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_set_device_num function declaration.
+static llvm::Function *getAccSetDeviceNumFunction(llvm::Module &module,
+                                                    llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_set_device_num",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_set_device_type function declaration.
+static llvm::Function *getAccSetDeviceTypeFunction(llvm::Module &module,
+                                                    llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_set_device_type",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_set_default_async function declaration.
+static llvm::Function *getAccSetDefaultAsyncFunction(llvm::Module &module,
+                                                      llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_set_default_async",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_wait function declaration.
+static llvm::Function *getAccWaitFunction(llvm::Module &module,
+                                           llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_wait",
+          llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, i32Ty, ptrTy, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_enter function declaration.
+static llvm::Function *getAccDataEnterFunction(llvm::Module &module,
+                                                llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_data_enter",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+              false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_exit function declaration.
+static llvm::Function *getAccDataExitFunction(llvm::Module &module,
+                                               llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_data_exit",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+              false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_begin function declaration.
+static llvm::Function *getAccDataBeginFunction(llvm::Module &module,
+                                                llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_data_begin",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+              false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_end function declaration.
+static llvm::Function *getAccDataEndFunction(llvm::Module &module,
+                                              llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_data_end",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+              false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_update function declaration.
+static llvm::Function *getAccDataUpdateFunction(llvm::Module &module,
+                                                 llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_data_update",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+              false))
+          .getCallee());
+}
+
+//===----------------------------------------------------------------------===//
+// OpenACC Data Operation Call Helper
+//===----------------------------------------------------------------------===//
+
+/// Emit call to OpenACC data runtime function.
+static void emitAccDataCall(llvm::IRBuilderBase &builder, llvm::Function *fn,
+                            llvm::Value *srcLocInfo, llvm::Value *flagsArg,
+                            llvm::Value *deviceTypeArg, llvm::Value *argNumVal,
+                            llvm::Value *argsBasePtr, llvm::Value *argsPtr,
+                            llvm::Value *argSizesPtr, llvm::Value *maptypesArg,
+                            llvm::Value *mapnamesArg, int64_t asyncVal) {
+  auto *nullPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(builder.getContext()));
+  auto *asyncValConst = llvm::ConstantInt::get(llvm::Type::getInt64Ty(builder.getContext()), asyncVal);
+  
+  builder.CreateCall(fn, {srcLocInfo, flagsArg, deviceTypeArg, argNumVal,
+                          argsBasePtr, argsPtr, argSizesPtr, maptypesArg,
+                          mapnamesArg, nullPtr, nullPtr, asyncValConst});
+}
+
+//===----------------------------------------------------------------------===//
 // Utility functions
 //===----------------------------------------------------------------------===//
 
 /// Flag values are extracted from openmp/libomptarget/include/omptarget.h and
 /// mapped to corresponding OpenACC flags.
-static constexpr uint64_t kCreateFlag = 0x000;
-static constexpr uint64_t kDeviceCopyinFlag = 0x001;
-static constexpr uint64_t kHostCopyoutFlag = 0x002;
+/// TGT_ACC_MAPTYPE flags from Interface.h:
+/// TO = 0x1, FROM = 0x2, ALLOC = 0x4, DELETE = 0x8, PTR_AND_OBJ = 0x10
+static constexpr uint64_t kCreateFlag = 0x004;  // ALLOC
+static constexpr uint64_t kDeviceCopyinFlag = 0x001;  // TO
+static constexpr uint64_t kHostCopyoutFlag = 0x002;   // FROM
+static constexpr uint64_t kDeleteFlag = 0x008;        // DELETE
+static constexpr uint64_t kPtrAndObjFlag = 0x010;     // PTR_AND_OBJ
 static constexpr uint64_t kPresentFlag = 0x1000;
-static constexpr uint64_t kDeleteFlag = 0x008;
 // Runtime extension to implement the OpenACC second reference counter.
 static constexpr uint64_t kHoldFlag = 0x2000;
+// OMP_TGT_MAPTYPE_ATTACH from omptarget.h - used for attach/detach.
+static constexpr uint64_t kAttachFlag = 0x4000;
+// no_create: no ALLOC/TO/FROM flags, just PTR_AND_OBJ to register presence.
+static constexpr uint64_t kNoCreateFlag = 0x0;
 
 /// Default value for the device id
 static constexpr int64_t kDefaultDevice = -1;
@@ -58,19 +253,18 @@ static llvm::Value *createSourceLocationInfo(OpenACCIRBuilder &builder,
 
 /// Return the runtime function used to lower the given operation.
 static llvm::Function *getAssociatedFunction(OpenACCIRBuilder &builder,
-                                             Operation *op) {
+                                             Operation *op,
+                                             llvm::Module &module,
+                                             llvm::LLVMContext &ctx) {
   return llvm::TypeSwitch<Operation *, llvm::Function *>(op)
       .Case([&](acc::EnterDataOp) {
-        return builder.getOrCreateRuntimeFunctionPtr(
-            llvm::omp::OMPRTL___tgt_target_data_begin_mapper);
+        return getAccDataEnterFunction(module, ctx);
       })
       .Case([&](acc::ExitDataOp) {
-        return builder.getOrCreateRuntimeFunctionPtr(
-            llvm::omp::OMPRTL___tgt_target_data_end_mapper);
+        return getAccDataExitFunction(module, ctx);
       })
       .Case([&](acc::UpdateOp) {
-        return builder.getOrCreateRuntimeFunctionPtr(
-            llvm::omp::OMPRTL___tgt_target_data_update_mapper);
+        return getAccDataUpdateFunction(module, ctx);
       });
   llvm_unreachable("Unknown OpenACC operation");
 }
@@ -143,33 +337,54 @@ processDataOperands(llvm::IRBuilderBase &builder,
                     acc::EnterDataOp op, SmallVector<uint64_t> &flags,
                     SmallVectorImpl<llvm::Constant *> &names,
                     struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
-  // TODO add `create_zero` and `attach` operands
-
   unsigned index = 0;
 
   // Create operands are handled as `alloc` call.
   // Copyin operands are handled as `to` call.
-  llvm::SmallVector<mlir::Value> create, copyin;
+  // Attach operands are handled as `attach` call.
+  // Create_zero operands are handled as `alloc` call with PTR_AND_OBJ.
+  llvm::SmallVector<mlir::Value> create, copyin, attachOperands,
+      createZeroOperands;
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
     if (auto createOp = dataOp.getDefiningOp<acc::CreateOp>()) {
-      create.push_back(createOp.getVarPtr());
+      if (createOp.isCreateZero()) {
+        createZeroOperands.push_back(createOp.getVarPtr());
+      } else {
+        create.push_back(createOp.getVarPtr());
+      }
     } else if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(
                    dataOp.getDefiningOp())) {
       copyin.push_back(copyinOp.getVarPtr());
+    } else if (auto attachOp = mlir::dyn_cast_or_null<acc::AttachOp>(
+                   dataOp.getDefiningOp())) {
+      attachOperands.push_back(attachOp.getVarPtr());
     }
   }
 
-  auto nbTotalOperands = create.size() + copyin.size();
+  auto nbTotalOperands = create.size() + copyin.size() +
+                         attachOperands.size() + createZeroOperands.size();
 
   // Create operands are handled as `alloc` call.
   if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kCreateFlag, flags, names, index,
-                             mapperAllocas)))
+                             nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags,
+                             names, index, mapperAllocas)))
     return failure();
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag, flags, names,
+                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag, flags, names,
+                             index, mapperAllocas)))
+    return failure();
+
+  // Attach operands are handled as `attach` call.
+  if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
+                             nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags, names,
+                             index, mapperAllocas)))
+    return failure();
+
+  // Create_zero operands are handled as `alloc` call with PTR_AND_OBJ.
+  if (failed(processOperands(builder, moduleTranslation, op, createZeroOperands,
+                             nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags, names,
                              index, mapperAllocas)))
     return failure();
 
@@ -183,11 +398,10 @@ processDataOperands(llvm::IRBuilderBase &builder,
                     acc::ExitDataOp op, SmallVector<uint64_t> &flags,
                     SmallVectorImpl<llvm::Constant *> &names,
                     struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
-  // TODO add `detach` operands
-
   unsigned index = 0;
 
-  llvm::SmallVector<mlir::Value> deleteOperands, copyoutOperands;
+  llvm::SmallVector<mlir::Value> deleteOperands, copyoutOperands,
+      detachOperands;
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
     if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
             dataOp.getDefiningOp())) {
@@ -196,22 +410,31 @@ processDataOperands(llvm::IRBuilderBase &builder,
           deleteOperands.push_back(devicePtrOp.getVarPtr());
         else if (mlir::dyn_cast_or_null<acc::CopyoutOp>(u.getOwner()))
           copyoutOperands.push_back(devicePtrOp.getVarPtr());
+        else if (mlir::dyn_cast_or_null<acc::DetachOp>(u.getOwner()))
+          detachOperands.push_back(devicePtrOp.getVarPtr());
       }
     }
   }
 
-  auto nbTotalOperands = deleteOperands.size() + copyoutOperands.size();
+  auto nbTotalOperands = deleteOperands.size() + copyoutOperands.size() +
+                         detachOperands.size();
 
   // Delete operands are handled as `delete` call.
   if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kDeleteFlag, flags, names, index,
+                             nbTotalOperands, kDeleteFlag | kPtrAndObjFlag, flags, names, index,
                              mapperAllocas)))
     return failure();
 
   // Copyout operands are handled as `from` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyoutOperands,
-                             nbTotalOperands, kHostCopyoutFlag, flags, names,
-                             index, mapperAllocas)))
+                             nbTotalOperands, kHostCopyoutFlag | kPtrAndObjFlag, flags,
+                             names, index, mapperAllocas)))
+    return failure();
+
+  // Detach operands are handled as `detach` call (attach + delete + PTR_AND_OBJ).
+  if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
+                             nbTotalOperands, kAttachFlag | kDeleteFlag | kPtrAndObjFlag, flags,
+                             names, index, mapperAllocas)))
     return failure();
 
   return success();
@@ -241,14 +464,220 @@ processDataOperands(llvm::IRBuilderBase &builder,
   }
 
   if (failed(processOperands(builder, moduleTranslation, op, from, from.size(),
-                             kHostCopyoutFlag, flags, names, index,
+                             kHostCopyoutFlag | kPtrAndObjFlag, flags, names, index,
                              mapperAllocas)))
     return failure();
 
   if (failed(processOperands(builder, moduleTranslation, op, to, to.size(),
-                             kDeviceCopyinFlag, flags, names, index,
+                             kDeviceCopyinFlag | kPtrAndObjFlag, flags, names, index,
                              mapperAllocas)))
     return failure();
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Conversion functions for init/shutdown/set/wait
+//===----------------------------------------------------------------------===//
+
+/// Converts acc.init operation into LLVM IR.
+static LogicalResult convertInitOp(acc::InitOp op,
+                                    llvm::IRBuilderBase &builder,
+                                    LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+  auto *fn = getAccInitFunction(*module, ctx);
+
+  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
+  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
+    switch (mlirType) {
+    case 0: return 0;  // None -> none
+    case 1: return 0;  // Star -> none
+    case 2: return 1;  // Default -> default
+    case 3: return 2;  // Host -> host
+    case 4: return 3;  // Multicore -> not_host
+    case 5: return 4;  // Nvidia -> nvidia
+    case 6: return 5;  // Radeon -> amd
+    default: return 1; // Unknown -> default
+    }
+  };
+
+  int64_t deviceType = 1; // default
+  if (op.getDeviceTypes()) {
+    auto dtypes = op.getDeviceTypes()->getValue();
+    if (!dtypes.empty()) {
+      int64_t mlirType = static_cast<int64_t>(
+          mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue());
+      deviceType = mapDeviceType(mlirType);
+    }
+  }
+
+  llvm::Value *deviceNumVal = builder.getInt64(-1);
+  if (op.getDeviceNum()) {
+    deviceNumVal = moduleTranslation.lookupValue(op.getDeviceNum());
+    if (deviceNumVal->getType() != llvm::Type::getInt64Ty(ctx))
+      deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
+  }
+
+  builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                          builder.getInt64(deviceType), deviceNumVal});
+  return success();
+}
+
+/// Converts acc.shutdown operation into LLVM IR.
+static LogicalResult convertShutdownOp(acc::ShutdownOp op,
+                                        llvm::IRBuilderBase &builder,
+                                        LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+  auto *fn = getAccShutdownFunction(*module, ctx);
+
+  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
+  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
+    switch (mlirType) {
+    case 0: return 0;  // None -> none
+    case 1: return 0;  // Star -> none
+    case 2: return 1;  // Default -> default
+    case 3: return 2;  // Host -> host
+    case 4: return 3;  // Multicore -> not_host
+    case 5: return 4;  // Nvidia -> nvidia
+    case 6: return 5;  // Radeon -> amd
+    default: return 1; // Unknown -> default
+    }
+  };
+
+  int64_t deviceType = 1; // default
+  if (op.getDeviceTypes()) {
+    auto dtypes = op.getDeviceTypes()->getValue();
+    if (!dtypes.empty()) {
+      int64_t mlirType = static_cast<int64_t>(
+          mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue());
+      deviceType = mapDeviceType(mlirType);
+    }
+  }
+
+  llvm::Value *deviceNumVal = builder.getInt64(-1);
+  if (op.getDeviceNum()) {
+    deviceNumVal = moduleTranslation.lookupValue(op.getDeviceNum());
+    if (deviceNumVal->getType() != llvm::Type::getInt64Ty(ctx))
+      deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
+  }
+
+  builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                          builder.getInt64(deviceType), deviceNumVal});
+  return success();
+}
+
+/// Converts acc.set operation into LLVM IR.
+static LogicalResult convertSetOp(acc::SetOp op,
+                                   llvm::IRBuilderBase &builder,
+                                   LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+
+  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
+  // MLIR: None=0, Star=1, Default=2, Host=3, Multicore=4, Nvidia=5, Radeon=6
+  // Runtime: none=0, default=1, host=2, not_host=3, nvidia=4, amd=5, spirv=6
+  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
+    switch (mlirType) {
+    case 0: return 0;  // None -> none
+    case 1: return 0;  // Star -> none (not used)
+    case 2: return 1;  // Default -> default
+    case 3: return 2;  // Host -> host
+    case 4: return 3;  // Multicore -> not_host
+    case 5: return 4;  // Nvidia -> nvidia
+    case 6: return 5;  // Radeon -> amd
+    default: return 1; // Unknown -> default
+    }
+  };
+
+  if (op.getDefaultAsync()) {
+    auto *fn = getAccSetDefaultAsyncFunction(*module, ctx);
+    llvm::Value *asyncVal = moduleTranslation.lookupValue(op.getDefaultAsync());
+    if (asyncVal->getType() != llvm::Type::getInt64Ty(ctx))
+      asyncVal = builder.CreateZExt(asyncVal, llvm::Type::getInt64Ty(ctx));
+    builder.CreateCall(fn, {srcLocInfo, asyncVal});
+  }
+
+  if (op.getDeviceNum()) {
+    auto *fn = getAccSetDeviceNumFunction(*module, ctx);
+    llvm::Value *deviceNumVal = moduleTranslation.lookupValue(op.getDeviceNum());
+    if (deviceNumVal->getType() != llvm::Type::getInt64Ty(ctx))
+      deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
+    int64_t deviceType = 1; // default
+    if (op.getDeviceType())
+      deviceType = mapDeviceType(static_cast<int64_t>(*op.getDeviceType()));
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                           builder.getInt64(deviceType), deviceNumVal});
+  } else if (op.getDeviceType()) {
+    auto *fn = getAccSetDeviceTypeFunction(*module, ctx);
+    int64_t rtDeviceType = mapDeviceType(static_cast<int64_t>(*op.getDeviceType()));
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                           builder.getInt64(rtDeviceType)});
+  }
+
+  return success();
+}
+
+/// Converts acc.wait operation into LLVM IR.
+static LogicalResult convertWaitOp(acc::WaitOp op,
+                                    llvm::IRBuilderBase &builder,
+                                    LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+  auto *fn = getAccWaitFunction(*module, ctx);
+
+  int64_t deviceType = 0;
+  int32_t deviceNum = -1;
+  if (op.getWaitDevnum()) {
+    llvm::Value *devnumVal = moduleTranslation.lookupValue(op.getWaitDevnum());
+    if (devnumVal->getType() != llvm::Type::getInt32Ty(ctx))
+      devnumVal = builder.CreateZExt(devnumVal, llvm::Type::getInt32Ty(ctx));
+  }
+
+  uint32_t waitNum = op.getWaitOperands().size();
+
+  llvm::Value *waitListPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+  if (waitNum > 0) {
+    auto *arrTy = llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), waitNum);
+    auto *waitList = builder.CreateAlloca(arrTy);
+    for (uint32_t i = 0; i < waitNum; ++i) {
+      llvm::Value *waitVal = moduleTranslation.lookupValue(op.getWaitOperands()[i]);
+      if (waitVal->getType() != llvm::Type::getInt64Ty(ctx))
+        waitVal = builder.CreateZExt(waitVal, llvm::Type::getInt64Ty(ctx));
+      auto *gep = builder.CreateInBoundsGEP(arrTy, waitList,
+                                            {builder.getInt32(0), builder.getInt32(i)});
+      builder.CreateStore(waitVal, gep);
+    }
+    waitListPtr = waitList;
+  }
+
+  int64_t asyncVal = -1;
+  if (op.getAsync() && op.getAsyncOperand()) {
+    llvm::Value *asyncValL = moduleTranslation.lookupValue(op.getAsyncOperand());
+    if (asyncValL->getType() != llvm::Type::getInt64Ty(ctx))
+      asyncValL = builder.CreateZExt(asyncValL, llvm::Type::getInt64Ty(ctx));
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                           builder.getInt64(deviceType), builder.getInt32(deviceNum),
+                           builder.getInt32(waitNum), waitListPtr, asyncValL});
+    return success();
+  }
+
+  builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                         builder.getInt64(deviceType), builder.getInt32(deviceNum),
+                         builder.getInt32(waitNum), waitListPtr,
+                         builder.getInt64(asyncVal)});
   return success();
 }
 
@@ -261,6 +690,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
                                    llvm::IRBuilderBase &builder,
                                    LLVM::ModuleTranslation &moduleTranslation) {
   llvm::LLVMContext &ctx = builder.getContext();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
   auto enclosingFuncOp = op.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
   llvm::Function *enclosingFunction =
       moduleTranslation.lookupFunction(enclosingFuncOp.getName());
@@ -269,11 +699,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   llvm::Value *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
 
-  llvm::Function *beginMapperFunc = accBuilder->getOrCreateRuntimeFunctionPtr(
-      llvm::omp::OMPRTL___tgt_target_data_begin_mapper);
-
-  llvm::Function *endMapperFunc = accBuilder->getOrCreateRuntimeFunctionPtr(
-      llvm::omp::OMPRTL___tgt_target_data_end_mapper);
+  llvm::Function *beginMapperFunc = getAccDataBeginFunction(*module, ctx);
+  llvm::Function *endMapperFunc = getAccDataEndFunction(*module, ctx);
 
   // Number of arguments in the data operation.
   unsigned totalNbOperand = op.getNumDataOperands();
@@ -289,10 +716,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   SmallVector<llvm::Constant *> names;
   unsigned index = 0;
 
-  // TODO handle no_create, deviceptr and attach operands.
-
   llvm::SmallVector<mlir::Value> copyin, copyout, create, present,
-      deleteOperands;
+      deleteOperands, noCreateOperands, attachOperands;
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
     if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
             dataOp.getDefiningOp())) {
@@ -317,39 +742,58 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       create.push_back(createOp.getVarPtr());
     } else if (auto presentOp = mlir::dyn_cast_or_null<acc::PresentOp>(
                    dataOp.getDefiningOp())) {
-      present.push_back(createOp.getVarPtr());
+      present.push_back(presentOp.getVarPtr());
+    } else if (auto noCreateOp = mlir::dyn_cast_or_null<acc::NoCreateOp>(
+                   dataOp.getDefiningOp())) {
+      noCreateOperands.push_back(noCreateOp.getVarPtr());
+    } else if (auto attachOp = mlir::dyn_cast_or_null<acc::AttachOp>(
+                   dataOp.getDefiningOp())) {
+      attachOperands.push_back(attachOp.getVarPtr());
     }
   }
 
   auto nbTotalOperands = copyin.size() + copyout.size() + create.size() +
-                         present.size() + deleteOperands.size();
+                         present.size() + deleteOperands.size() +
+                         noCreateOperands.size() + attachOperands.size();
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kHoldFlag,
+                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag | kHoldFlag,
                              flags, names, index, mapperAllocas)))
     return failure();
 
   // Delete operands are handled as `delete` call.
-  if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kDeleteFlag, flags, names, index,
-                             mapperAllocas)))
-    return failure();
+    if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
+                               nbTotalOperands, kDeleteFlag, flags, names, index,
+                               mapperAllocas)))
+      return failure();
 
-  // Copyout operands are handled as `from` call.
-  if (failed(processOperands(builder, moduleTranslation, op, copyout,
-                             nbTotalOperands, kHostCopyoutFlag | kHoldFlag,
-                             flags, names, index, mapperAllocas)))
-    return failure();
+    // Copyout operands are handled as `from` call.
+    if (failed(processOperands(builder, moduleTranslation, op, copyout,
+                               nbTotalOperands, kHostCopyoutFlag | kPtrAndObjFlag, flags,
+                               names, index, mapperAllocas)))
+      return failure();
 
-  // Create operands are handled as `alloc` call.
-  if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kCreateFlag | kHoldFlag, flags,
-                             names, index, mapperAllocas)))
-    return failure();
+    // Create operands are handled as `alloc` call.
+    if (failed(processOperands(builder, moduleTranslation, op, create,
+                               nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags,
+                               names, index, mapperAllocas)))
+      return failure();
 
   if (failed(processOperands(builder, moduleTranslation, op, present,
                              nbTotalOperands, kPresentFlag | kHoldFlag, flags,
+                             names, index, mapperAllocas)))
+    return failure();
+
+  // No_create operands - no ALLOC/TO/FROM flags, just PTR_AND_OBJ for presence.
+  if (failed(processOperands(builder, moduleTranslation, op, noCreateOperands,
+                             nbTotalOperands, kNoCreateFlag | kPtrAndObjFlag, flags,
+                             names, index, mapperAllocas)))
+    return failure();
+
+  // Attach operands are handled as `attach` call.
+  if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
+                             nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -366,9 +810,16 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       mapnames, /*Idx0=*/0, /*Idx1=*/0);
 
   // Create call to start the data region.
-  accBuilder->emitMapperCall(builder.saveIP(), beginMapperFunc, srcLocInfo,
-                             maptypesArg, mapnamesArg, mapperAllocas,
-                             kDefaultDevice, totalNbOperand);
+  auto *flagsVal = builder.getInt64(0);
+  auto *deviceTypeVal = builder.getInt64(0);  // acc_device_default
+  auto *argNumVal = builder.getInt32(totalNbOperand);
+  auto *argsBasePtr = mapperAllocas.ArgsBase;
+  auto *argsPtr = mapperAllocas.Args;
+  auto *argSizesPtr = mapperAllocas.ArgSizes;
+  
+  emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
+                  argNumVal, argsBasePtr, argsPtr, argSizesPtr,
+                  maptypesArg, mapnamesArg, -1);  // async = -1 (sync)
 
   // Convert the region.
   llvm::BasicBlock *entryBlock = nullptr;
@@ -409,9 +860,9 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // Create call to end the data region.
   builder.SetInsertPoint(endDataBlock);
-  accBuilder->emitMapperCall(builder.saveIP(), endMapperFunc, srcLocInfo,
-                             maptypesArg, mapnamesArg, mapperAllocas,
-                             kDefaultDevice, totalNbOperand);
+  emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
+                  argNumVal, argsBasePtr, argsPtr, argSizesPtr,
+                  maptypesArg, mapnamesArg, -1);  // async = -1 (sync)
 
   return success();
 }
@@ -427,14 +878,14 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
       moduleTranslation.lookupFunction(enclosingFuncOp.getName());
 
   OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
 
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
-  auto *mapperFunc = getAssociatedFunction(*accBuilder, op);
+  auto *mapperFunc = getAssociatedFunction(*accBuilder, op, *module, ctx);
 
   // Number of arguments in the enter_data operation.
   unsigned totalNbOperand = op.getNumDataOperands();
-
-  llvm::LLVMContext &ctx = builder.getContext();
 
   struct OpenACCIRBuilder::MapperAllocas mapperAllocas;
   OpenACCIRBuilder::InsertPointTy allocaIP(
@@ -462,9 +913,18 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
       llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), totalNbOperand),
       mapnames, /*Idx0=*/0, /*Idx1=*/0);
 
-  accBuilder->emitMapperCall(builder.saveIP(), mapperFunc, srcLocInfo,
-                             maptypesArg, mapnamesArg, mapperAllocas,
-                             kDefaultDevice, totalNbOperand);
+  // Prepare arguments for OpenACC data runtime call
+  auto *flagsVal = builder.getInt64(0);
+  auto *deviceTypeVal = builder.getInt64(0);  // acc_device_default
+  auto *argNumVal = builder.getInt32(totalNbOperand);
+  auto *argsBasePtr = mapperAllocas.ArgsBase;
+  auto *argsPtr = mapperAllocas.Args;
+  auto *argSizesPtr = mapperAllocas.ArgSizes;
+
+  // Emit call to OpenACC data runtime function
+  emitAccDataCall(builder, mapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
+                  argNumVal, argsBasePtr, argsPtr, argSizesPtr,
+                  maptypesArg, mapnamesArg, -1);  // async = -1 (sync)
 
   return success();
 }
@@ -509,6 +969,18 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return convertStandaloneDataOp<acc::UpdateOp>(updateOp, builder,
                                                       moduleTranslation);
       })
+      .Case([&](acc::InitOp initOp) {
+        return convertInitOp(initOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::ShutdownOp shutdownOp) {
+        return convertShutdownOp(shutdownOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::SetOp setOp) {
+        return convertSetOp(setOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::WaitOp waitOp) {
+        return convertWaitOp(waitOp, builder, moduleTranslation);
+      })
       .Case<acc::TerminatorOp, acc::YieldOp>([](auto op) {
         // `yield` and `terminator` can be just omitted. The block structure was
         // created in the function that handles their parent operation.
@@ -517,7 +989,8 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return success();
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::DeleteOp,
-            acc::UpdateDeviceOp, acc::GetDevicePtrOp>([](auto op) {
+            acc::UpdateDeviceOp, acc::UpdateHostOp, acc::GetDevicePtrOp,
+            acc::NoCreateOp, acc::AttachOp, acc::DetachOp>([](auto op) {
         // NOP
         return success();
       })
