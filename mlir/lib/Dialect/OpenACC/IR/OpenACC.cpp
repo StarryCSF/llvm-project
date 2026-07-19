@@ -2030,6 +2030,8 @@ static LogicalResult checkDataOperands(Op op,
     if (!mlir::isa<acc::AttachOp, acc::CopyinOp, acc::CopyoutOp, acc::CreateOp,
                    acc::DeleteOp, acc::DetachOp, acc::DevicePtrOp,
                    acc::GetDevicePtrOp, acc::NoCreateOp, acc::PresentOp>(
+            operand.getDefiningOp()) &&
+        !mlir::isa<acc::FirstprivateMapInitialOp>(
             operand.getDefiningOp()))
       return op.emitError(
           "expect data entry/exit operation or acc.getdeviceptr "

@@ -178,7 +178,7 @@ private:
   // being removed. But because of the way we chain it to the
   // `acc.firstprivate_map`, then its result becomes live-in to the
   // compute region and used as the variable the initial value is loaded from.
-  void handleFirstprivateMapping(acc::FirstprivateOp firstprivateOp) const;
+  Value handleFirstprivateMapping(acc::FirstprivateOp firstprivateOp) const;
   template <typename OpTy>
   void removeRecipe(OpTy op, ModuleOp moduleOp) const;
   template <typename OpTy, typename RecipeOpTy, typename AccOpTy>
@@ -190,7 +190,7 @@ private:
                                     acc::ACCToGPUMappingPolicy &policy) const;
 };
 
-void ACCRecipeMaterialization::handleFirstprivateMapping(
+Value ACCRecipeMaterialization::handleFirstprivateMapping(
     acc::FirstprivateOp firstprivateOp) const {
   OpBuilder builder(firstprivateOp);
   auto mapFirstprivateOp = acc::FirstprivateMapInitialOp::create(
@@ -199,6 +199,7 @@ void ACCRecipeMaterialization::handleFirstprivateMapping(
       firstprivateOp.getBounds());
   mapFirstprivateOp.setName(firstprivateOp.getName());
   firstprivateOp.getVarMutable().assign(mapFirstprivateOp.getAccVar());
+  return mapFirstprivateOp.getAccVar();
 }
 
 template <typename OpTy>
@@ -443,7 +444,8 @@ LogicalResult ACCRecipeMaterialization::materializeForACCOp(
       auto recipeOp = cast<acc::FirstprivateRecipeOp>(decl);
       LLVM_DEBUG(llvm::dbgs() << "materializing: " << firstprivateOp << "\n"
                               << symbolRef << "\n");
-      handleFirstprivateMapping(firstprivateOp);
+      Value firstprivateMap = handleFirstprivateMapping(firstprivateOp);
+      acc::getMutableDataOperands(accOp).append(ValueRange{firstprivateMap});
       if (failed(
               materialize(firstprivateOp, recipeOp, accOp, accSupport, policy)))
         return failure();

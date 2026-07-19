@@ -391,10 +391,14 @@ static bool getScalarMappingSize(Operation *parent, Value var,
                                  LLVM::ModuleTranslation &moduleTranslation,
                                  uint64_t &size) {
   Operation *entry = findDataEntryForMapping(parent, var);
-  if (!entry)
-    return false;
-
-  Type varType = acc::getVarType(entry);
+  Type varType = entry ? acc::getVarType(entry) : Type();
+  if (!varType) {
+    // Recipe materialization can leave a scalar private temporary as an
+    // LLVM alloca live into the launch. Such a temporary is mapped as a
+    // short-lived create entry by the kernel environment lowering.
+    if (auto alloca = var.getDefiningOp<LLVM::AllocaOp>())
+      varType = alloca.getElemType();
+  }
   if (!varType)
     return false;
 
@@ -1567,7 +1571,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::PresentOp,
             acc::NoCreateOp, acc::AttachOp, acc::DeclareDeviceResidentOp,
-            acc::DeclareLinkOp>(
+            acc::DeclareLinkOp, acc::FirstprivateMapInitialOp>(
           [&](auto op) {
             // Data entry ops: map their result (accPtr) to the varPtr's LLVM value.
             llvm::Value *varPtrVal = moduleTranslation.lookupValue(op.getVarPtr());
@@ -1612,7 +1616,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             return success();
           })
       .Case<acc::DeleteOp, acc::UpdateDeviceOp, acc::UpdateHostOp,
-            acc::FirstprivateMapInitialOp, acc::PrivatizeOp,
+            acc::PrivatizeOp,
             acc::UnwrapPrivateOp, acc::PrivateLocalOp,
             acc::ReductionInitOp,
             acc::ReductionCombineOp, acc::ReductionCombineRegionOp,
@@ -1769,21 +1773,15 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             llvm::Function *beginMapperFunc = getAccDataBeginFunction(*module, ctx);
             llvm::Function *endMapperFunc = getAccDataEndFunction(*module, ctx);
 
-            unsigned totalNbOperand = kernelEnvOp.getDataClauseOperands().size();
-
-            struct OpenACCIRBuilder::MapperAllocas mapperAllocas;
-            OpenACCIRBuilder::InsertPointTy allocaIP(
-                &enclosingFunction->getEntryBlock(),
-                enclosingFunction->getEntryBlock().getFirstInsertionPt());
-            accBuilder->createMapperAllocas(builder.saveIP(), allocaIP,
-                                            totalNbOperand, mapperAllocas);
-
             SmallVector<uint64_t> flags;
             SmallVector<llvm::Constant *> names;
             unsigned index = 0;
 
             llvm::SmallVector<mlir::Value> copyin, copyout, create, present,
-                deleteOperands, noCreateOperands, attachOperands, deviceptrOperands;
+                deleteOperands, noCreateOperands, attachOperands, deviceptrOperands,
+                privateOperands;
+            llvm::SmallVector<mlir::Value> mappedOperands(
+                kernelEnvOp.getDataClauseOperands());
             for (mlir::Value dataOp : kernelEnvOp.getDataClauseOperands()) {
               if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
                       dataOp.getDefiningOp())) {
@@ -1797,6 +1795,12 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               } else if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(
                              dataOp.getDefiningOp())) {
                 copyin.push_back(copyinOp.getVarPtr());
+              } else if (auto firstprivateOp =
+                             mlir::dyn_cast_or_null<acc::FirstprivateMapInitialOp>(
+                                 dataOp.getDefiningOp())) {
+                // The initial value is copied to device memory and released
+                // after the compute region, without a present-counter update.
+                copyin.push_back(firstprivateOp.getVarPtr());
               } else if (auto createOp = mlir::dyn_cast_or_null<acc::CreateOp>(
                              dataOp.getDefiningOp())) {
                 create.push_back(createOp.getVarPtr());
@@ -1812,10 +1816,37 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               }
             }
 
+            // Private recipe storage is represented by an alloca that is not
+            // itself an OpenACC data entry. Map it only for the lifetime of
+            // this launch so gpu.launch_func receives a device pointer.
+            kernelEnvOp.walk([&](gpu::LaunchFuncOp launchOp) {
+              for (mlir::Value arg : launchOp.getKernelOperands()) {
+                if (!isa<LLVM::LLVMPointerType>(arg.getType()) ||
+                    !arg.getDefiningOp<LLVM::AllocaOp>())
+                  continue;
+                bool isMapped = llvm::any_of(
+                    mappedOperands, [&](mlir::Value dataOp) {
+                      return acc::getVar(dataOp.getDefiningOp()) == arg;
+                    });
+                if (!isMapped && !llvm::is_contained(privateOperands, arg))
+                  privateOperands.push_back(arg);
+              }
+            });
+
+            unsigned totalNbOperand =
+                kernelEnvOp.getDataClauseOperands().size() +
+                privateOperands.size();
+            struct OpenACCIRBuilder::MapperAllocas mapperAllocas;
+            OpenACCIRBuilder::InsertPointTy allocaIP(
+                &enclosingFunction->getEntryBlock(),
+                enclosingFunction->getEntryBlock().getFirstInsertionPt());
+            accBuilder->createMapperAllocas(builder.saveIP(), allocaIP,
+                                            totalNbOperand, mapperAllocas);
+
             auto nbTotalOperands = copyin.size() + copyout.size() + create.size() +
                                    present.size() + deleteOperands.size() +
                                    noCreateOperands.size() + attachOperands.size() +
-                                   deviceptrOperands.size();
+                                   deviceptrOperands.size() + privateOperands.size();
 
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, copyin,
                                        nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
@@ -1849,6 +1880,11 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                        nbTotalOperands, kDevicePtrFlag | kPtrAndObjFlag, flags,
                                        names, index, mapperAllocas)))
               return failure();
+            if (failed(processOperands(builder, moduleTranslation, kernelEnvOp,
+                                       privateOperands, nbTotalOperands,
+                                       kCreateFlag, flags, names, index,
+                                       mapperAllocas)))
+              return failure();
 
             SmallVector<uint64_t> endFlags;
             auto appendEndFlags = [&](ValueRange operands, uint64_t flag) {
@@ -1877,6 +1913,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                   kernelEnvOp, data, moduleTranslation, scalarSize);
               endFlags.push_back(isScalar ? (flag & ~kPtrAndObjFlag) : flag);
             }
+            appendEndFlags(privateOperands, kDeleteFlag);
             appendEndFlags(present, kPresentFlag | kHoldFlag);
             appendEndFlags(noCreateOperands, kNoCreateFlag | kPtrAndObjFlag);
             appendEndFlags(attachOperands, kAttachFlag | kPtrAndObjFlag);
