@@ -951,6 +951,83 @@ static LogicalResult convertWaitOp(acc::WaitOp op,
   return success();
 }
 
+/// Convert an OpenACC atomic read through the common LLVM atomic builder.
+static LogicalResult
+convertAccAtomicRead(acc::AtomicReadOp &opInst,
+                     llvm::IRBuilderBase &builder,
+                     LLVM::ModuleTranslation &moduleTranslation) {
+  llvm::Value *llvmX = moduleTranslation.lookupValue(opInst.getX());
+  llvm::Value *llvmV = moduleTranslation.lookupValue(opInst.getV());
+  if (!llvmX || !llvmV)
+    return opInst.emitError("could not find LLVM value for atomic read");
+  llvm::Type *elementType =
+      moduleTranslation.convertType(opInst.getElementType());
+  if (!elementType)
+    return opInst.emitError("could not convert atomic read element type");
+
+  auto enclosingFuncOp =
+      opInst.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  if (builder.GetInsertBlock() == &enclosingFunction->getEntryBlock() &&
+      builder.GetInsertPoint() == builder.GetInsertBlock()->end()) {
+    llvm::BasicBlock *bodyBlock = llvm::BasicBlock::Create(
+        builder.getContext(), "acc.atomic.body", enclosingFunction,
+        enclosingFunction->getEntryBlock().getNextNode());
+    builder.CreateBr(bodyBlock);
+    builder.SetInsertPoint(bodyBlock);
+  }
+  llvm::OpenMPIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  llvm::OpenMPIRBuilder::LocationDescription location(builder);
+  llvm::OpenMPIRBuilder::AtomicOpValue x = {
+      llvmX, elementType, /*isSigned=*/false, /*isVolatile=*/false};
+  llvm::OpenMPIRBuilder::AtomicOpValue v = {
+      llvmV, elementType, /*isSigned=*/false, /*isVolatile=*/false};
+  builder.restoreIP(moduleTranslation.getOpenMPBuilder()->createAtomicRead(
+      location, x, v, llvm::AtomicOrdering::Monotonic, allocaIP));
+  return success();
+}
+
+/// Convert an OpenACC atomic write through the common LLVM atomic builder.
+static LogicalResult
+convertAccAtomicWrite(acc::AtomicWriteOp &opInst,
+                      llvm::IRBuilderBase &builder,
+                      LLVM::ModuleTranslation &moduleTranslation) {
+  llvm::Value *llvmX = moduleTranslation.lookupValue(opInst.getX());
+  llvm::Value *llvmExpr = moduleTranslation.lookupValue(opInst.getExpr());
+  if (!llvmX || !llvmExpr)
+    return opInst.emitError("could not find LLVM value for atomic write");
+  llvm::Type *elementType =
+      moduleTranslation.convertType(opInst.getExpr().getType());
+  if (!elementType)
+    return opInst.emitError("could not convert atomic write element type");
+
+  auto enclosingFuncOp =
+      opInst.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  if (builder.GetInsertBlock() == &enclosingFunction->getEntryBlock() &&
+      builder.GetInsertPoint() == builder.GetInsertBlock()->end()) {
+    llvm::BasicBlock *bodyBlock = llvm::BasicBlock::Create(
+        builder.getContext(), "acc.atomic.body", enclosingFunction,
+        enclosingFunction->getEntryBlock().getNextNode());
+    builder.CreateBr(bodyBlock);
+    builder.SetInsertPoint(bodyBlock);
+  }
+  llvm::OpenMPIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  llvm::OpenMPIRBuilder::LocationDescription location(builder);
+  llvm::OpenMPIRBuilder::AtomicOpValue x = {
+      llvmX, elementType, /*isSigned=*/false, /*isVolatile=*/false};
+  builder.restoreIP(moduleTranslation.getOpenMPBuilder()->createAtomicWrite(
+      location, x, llvmExpr, llvm::AtomicOrdering::Monotonic,
+      allocaIP));
+  return success();
+}
+
 /// Convert an OpenACC atomic update through the common LLVM atomic builder.
 /// The update region is also used for non-trivial expressions, in which case
 /// the builder emits a compare-exchange loop instead of atomicrmw.
@@ -1561,6 +1638,12 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       .Case([&](acc::AtomicUpdateOp atomicUpdateOp) {
         return convertAccAtomicUpdate(atomicUpdateOp, builder,
                                       moduleTranslation);
+      })
+      .Case([&](acc::AtomicReadOp atomicReadOp) {
+        return convertAccAtomicRead(atomicReadOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::AtomicWriteOp atomicWriteOp) {
+        return convertAccAtomicWrite(atomicWriteOp, builder, moduleTranslation);
       })
       .Case<acc::TerminatorOp, acc::YieldOp>([](auto op) {
         // `yield` and `terminator` can be just omitted. The block structure was

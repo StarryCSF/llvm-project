@@ -356,6 +356,36 @@ struct AtomicUpdateOpConversion
   }
 };
 
+/// Convert OpenACC atomic read/write operands to LLVM-compatible types. The
+/// atomic semantics are emitted by the OpenACC LLVM translation interface.
+struct AtomicReadOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::AtomicReadOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::AtomicReadOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+struct AtomicWriteOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::AtomicWriteOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::AtomicWriteOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
 // ---- CG ops from OpenACC compute lowering pipeline ----
 
 /// acc.privatize - creates private storage handle.
@@ -605,7 +635,8 @@ void fir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::TerminatorOp, mlir::acc::YieldOp,
       mlir::acc::DeclareDeviceResidentOp, mlir::acc::DeclareLinkOp,
       mlir::acc::InitOp, mlir::acc::ShutdownOp,
-      mlir::acc::SetOp, mlir::acc::WaitOp, mlir::acc::AtomicUpdateOp>(
+      mlir::acc::SetOp, mlir::acc::WaitOp, mlir::acc::AtomicReadOp,
+      mlir::acc::AtomicWriteOp, mlir::acc::AtomicUpdateOp>(
       [&](mlir::Operation *op) {
     return typeConverter.isLegal(op->getOperandTypes()) &&
            typeConverter.isLegal(op->getResultTypes()) &&
@@ -713,6 +744,8 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<ShutdownOpConversion>(converter);
   patterns.add<SetOpConversion>(converter);
   patterns.add<WaitOpConversion>(converter);
+  patterns.add<AtomicReadOpConversion>(converter);
+  patterns.add<AtomicWriteOpConversion>(converter);
   patterns.add<AtomicUpdateOpConversion>(converter);
   patterns.add<ParallelOpConversion>(converter);
   patterns.add<SerialOpConversion>(converter);
