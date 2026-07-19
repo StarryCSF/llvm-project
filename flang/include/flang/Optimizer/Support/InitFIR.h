@@ -21,6 +21,12 @@
 #include "flang/Optimizer/OpenACC/Support/RegisterOpenACCExtensions.h"
 #include "flang/Optimizer/OpenMP/Support/RegisterOpenMPExtensions.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
+#include "mlir/Conversion/GPUToNVVM/GPUToNVVM.h"
+#include "mlir/InitAllExtensions.h"
+#include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
@@ -82,6 +88,25 @@ inline void addFIRExtensions(mlir::DialectRegistry &registry,
   cuf::registerCUFDialectTranslation(registry);
   fir::acc::registerOpenACCExtensions(registry);
   fir::omp::registerOpenMPExtensions(registry);
+  // Register GPU and NVVM LLVM IR translation so that gpu.launch_func and
+  // gpu.module are correctly translated to LLVM IR.
+  mlir::registerGPUDialectTranslation(registry);
+  mlir::registerNVVMDialectTranslation(registry);
+  // Register NVVM→LLVM conversion interface (implements TargetAttrInterface
+  // for #nvvm.target, needed by gpu-module-to-binary).
+  mlir::registerConvertNVVMToLLVMInterface(registry);
+  // Register GPU→NVVM conversion interface (needed by convert-gpu-to-nvvm).
+  mlir::NVVM::registerConvertGpuToNVVMInterface(registry);
+  // Register all MLIR conversion extensions. This is needed because
+  // convert-gpu-to-nvvm loads dependent dialects (vector, ub, etc.) that
+  // require ConvertToLLVMPatternInterface to be registered.
+  mlir::registerAllExtensions(registry);
+  // Register NVVM TargetAttrInterface external models so that #nvvm.target
+  // can be used by gpu-module-to-binary to compile kernels to PTX.
+  mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+  // Register SelectObjectAttr's OffloadingLLVMTranslationAttrInterface
+  // so that gpu.binary can be embedded into host LLVM IR.
+  mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
 }
 
 inline void loadNonCodegenDialects(mlir::MLIRContext &context) {

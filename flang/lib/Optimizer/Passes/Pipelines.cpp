@@ -13,6 +13,7 @@
 #include "flang/Optimizer/HLFIR/Passes.h"
 #include "flang/Optimizer/OpenACC/Passes.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/OpenACC/Transforms/Passes.h"
 #include "mlir/Dialect/OpenMP/Transforms/Passes.h"
@@ -144,6 +145,21 @@ void addFIRToLLVMPass(mlir::PassManager &pm,
   // ops behind, so run reconcile-unrealized-casts to clean them up.
   addPassConditionally(pm, disableFirToLlvmIr, [&]() {
     return mlir::createReconcileUnrealizedCastsPass();
+  });
+  // After FIR→LLVM, outline gpu.launch regions into gpu.module/gpu.func.
+  // This must run after FIR→LLVM so that FIR types are already converted.
+  addPassConditionally(pm, disableFirToLlvmIr, [&]() {
+    return mlir::createGpuKernelOutliningPass();
+  });
+  // Convert gpu.func → llvm.func inside gpu.module (NVVM target).
+  addPassConditionally(pm, disableFirToLlvmIr, [&]() {
+    auto &nestPM = pm.nest<mlir::gpu::GPUModuleOp>();
+    nestPM.addPass(mlir::createConvertGpuOpsToNVVMOps());
+    return mlir::createReconcileUnrealizedCastsPass();
+  });
+  // Compile gpu.module kernels to binary (PTX) and embed in gpu.binary.
+  addPassConditionally(pm, disableFirToLlvmIr, [&]() {
+    return mlir::createGpuModuleToBinaryPass();
   });
 }
 
@@ -277,6 +293,9 @@ void createDefaultFIROptimizerPassPipeline(mlir::PassManager &pm,
   pm.addNestedPass<mlir::func::FuncOp>(mlir::acc::createACCBindRoutine());
   pm.addPass(mlir::acc::createACCDeclareGPUModuleInsertion());
   pm.addPass(mlir::acc::createACCRoutineToGPUFunc());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::acc::createACCCGToGPU());
+  // Note: gpu-kernel-outlining is deferred until after FIR-to-LLVM so that
+  // FIR types inside gpu.launch regions are converted first.
   pm.addPass(mlir::createConvertOpenACCToSCFPass());
 
   // ACC compute lowering creates acc.compute_region which is IsolatedFromAbove.

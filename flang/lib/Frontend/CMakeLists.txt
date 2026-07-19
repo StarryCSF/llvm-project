@@ -77,6 +77,10 @@ add_flang_library(flangFrontend
   MLIRTransforms
   MLIRBuiltinToLLVMIRTranslation
   MLIRLLVMToLLVMIRTranslation
+  MLIRGPUToLLVMIRTranslation
+  MLIRNVVMToLLVMIRTranslation
+  MLIRNVVMToLLVM
+  MLIRNVVMTarget
   MLIRSCFToControlFlow
   MLIRTargetLLVMIRImport
   ${dialect_libs}

@@ -751,12 +751,14 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 
   // Create a kernel body region with kNumConfigRegionAttributes + N memory
   // attributions, where the first kNumConfigRegionAttributes arguments have
-  // `index` type and the rest have the same types as the data operands.
+  // the same type as the grid/block operands (index or i64) and the rest have
+  // the same types as the data operands.
   Region *kernelRegion = result.addRegion();
   Block *body = builder.createBlock(kernelRegion);
   // TODO: Allow passing in proper locations here.
+  Type dimType = gridSizeX.getType();
   for (unsigned i = 0; i < kNumConfigRegionAttributes; ++i)
-    body->addArgument(builder.getIndexType(), result.location);
+    body->addArgument(dimType, result.location);
   // Add WorkGroup & Private attributions to the region arguments.
   for (Type argTy : workgroupAttributions)
     body->addArgument(argTy, result.location);

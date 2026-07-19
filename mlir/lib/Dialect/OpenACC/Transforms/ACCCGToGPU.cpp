@@ -863,6 +863,22 @@ LogicalResult ACCCGToGPULowering::rewrite() {
     Value gridDimY = launchArgument(gpu::Processor::BlockY);
     Value gridDimZ = launchArgument(gpu::Processor::BlockZ);
 
+    // Convert Index dims to i64 so that gpu.launch operands and region
+    // arguments are i64 instead of Index.  This avoids unrealized_conversion_cast
+    // after FIR→LLVM and ensures gpu.func parameters are LLVM types.
+    auto indexToI64 = [&](Value v) -> Value {
+      if (v.getType().isIndex()) {
+        return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), v);
+      }
+      return v;
+    };
+    blockDimX = indexToI64(blockDimX);
+    blockDimY = indexToI64(blockDimY);
+    blockDimZ = indexToI64(blockDimZ);
+    gridDimX = indexToI64(gridDimX);
+    gridDimY = indexToI64(gridDimY);
+    gridDimZ = indexToI64(gridDimZ);
+
     // The format of the message is:
     // Generating [serial] {deviceLabel} code with gridDim=32x1x1
     // blockDim=256x1x1

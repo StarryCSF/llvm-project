@@ -20,6 +20,8 @@ add_flang_library(flangPasses
   ${dialect_libs}
   ${extension_libs}
   MLIRComplexToStandard
+  MLIRGPUTransforms
+  MLIRGPUToNVVM
   MLIRLLVMIRTransforms
   MLIRMathToFuncs
   MLIRMathToLLVM

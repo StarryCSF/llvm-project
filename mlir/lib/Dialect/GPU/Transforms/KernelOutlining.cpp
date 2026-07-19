@@ -18,6 +18,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Utils/GPUUtils.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -424,6 +425,14 @@ private:
       // If not found, create a new GPU module
       kernelModule = gpu::GPUModuleOp::create(builder, kernelFunc.getLoc(),
                                               kernelModuleName);
+      // Add #nvvm.target so gpu-module-to-binary can compile the kernel.
+      auto nvvmTarget = mlir::NVVM::NVVMTargetAttr::get(context);
+      kernelModule.setTargetsAttr(
+          builder.getArrayAttr({nvvmTarget}));
+      // Add #gpu.select_object offloading handler so that
+      // translateModuleToLLVMIR can embed the binary.
+      kernelModule.setOffloadingHandlerAttr(
+          mlir::gpu::SelectObjectAttr::get(context, nvvmTarget));
     }
 
     // If a valid data layout spec was provided, attach it to the kernel module.

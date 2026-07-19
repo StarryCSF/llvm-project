@@ -206,13 +206,12 @@ static void emitAccDataCall(llvm::IRBuilderBase &builder, llvm::Function *fn,
                             llvm::Value *deviceTypeArg, llvm::Value *argNumVal,
                             llvm::Value *argsBasePtr, llvm::Value *argsPtr,
                             llvm::Value *argSizesPtr, llvm::Value *maptypesArg,
-                            llvm::Value *mapnamesArg, int64_t asyncVal) {
+                            llvm::Value *mapnamesArg, llvm::Value *asyncVal) {
   auto *nullPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(builder.getContext()));
-  auto *asyncValConst = llvm::ConstantInt::get(llvm::Type::getInt64Ty(builder.getContext()), asyncVal);
   
   builder.CreateCall(fn, {srcLocInfo, flagsArg, deviceTypeArg, argNumVal,
                           argsBasePtr, argsPtr, argSizesPtr, maptypesArg,
-                          mapnamesArg, nullPtr, nullPtr, asyncValConst});
+                          mapnamesArg, nullPtr, nullPtr, asyncVal});
 }
 
 //===----------------------------------------------------------------------===//
@@ -821,7 +820,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   
   emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, -1);  // async = -1 (sync)
+                  maptypesArg, mapnamesArg, builder.getInt64(-1));  // async = -1 (sync)
 
   // Convert the region.
   llvm::BasicBlock *entryBlock = nullptr;
@@ -864,7 +863,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   builder.SetInsertPoint(endDataBlock);
   emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, -1);  // async = -1 (sync)
+                  maptypesArg, mapnamesArg, builder.getInt64(-1));  // async = -1 (sync)
 
   return success();
 }
@@ -1008,7 +1007,7 @@ static LogicalResult convertComputeOp(OpTy &op,
   // Begin data region
   emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, -1);
+                  maptypesArg, mapnamesArg, builder.getInt64(-1));
 
   // Convert the region body
   llvm::BasicBlock *entryBlock = nullptr;
@@ -1043,7 +1042,7 @@ static LogicalResult convertComputeOp(OpTy &op,
   builder.SetInsertPoint(endBlock);
   emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, -1);
+                  maptypesArg, mapnamesArg, builder.getInt64(-1));
 
   return success();
 }
@@ -1105,7 +1104,7 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   // Emit call to OpenACC data runtime function
   emitAccDataCall(builder, mapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, -1);  // async = -1 (sync)
+                  maptypesArg, mapnamesArg, builder.getInt64(-1));  // async = -1 (sync)
 
   return success();
 }
@@ -1469,10 +1468,45 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             auto *argsPtr = mapperAllocas.Args;
             auto *argSizesPtr = mapperAllocas.ArgSizes;
 
+            // Determine async value for runtime calls
+            llvm::Value *asyncArg = builder.getInt64(-1); // default: synchronous
+            if (kernelEnvOp.getAsyncOperand()) {
+              llvm::Value *asyncV = moduleTranslation.lookupValue(
+                  kernelEnvOp.getAsyncOperand());
+              if (!asyncV) {
+                kernelEnvOp.emitError("could not find LLVM value for async operand");
+                return failure();
+              }
+              // Convert to i64 if needed
+              if (asyncV->getType() != llvm::Type::getInt64Ty(ctx))
+                asyncV = builder.CreateZExt(asyncV, llvm::Type::getInt64Ty(ctx));
+              asyncArg = asyncV;
+            } else if (kernelEnvOp.getAsyncOnly()) {
+              // acc parallel async (no arg) = use default async queue
+              // __tgt_acc_set_default_async has already been called,
+              // pass acc_async_noval (-2) to indicate async without explicit value
+              asyncArg = builder.getInt64(-2);
+            }
+
+            // Generate wait calls before the data region if wait operands exist
+            if (!kernelEnvOp.getWaitOperands().empty()) {
+              llvm::Function *waitFn = getAccWaitFunction(*module, ctx);
+              for (mlir::Value waitOp : kernelEnvOp.getWaitOperands()) {
+                llvm::Value *waitV = moduleTranslation.lookupValue(waitOp);
+                if (!waitV) {
+                  kernelEnvOp.emitError("could not find LLVM value for wait operand");
+                  return failure();
+                }
+                if (waitV->getType() != llvm::Type::getInt64Ty(ctx))
+                  waitV = builder.CreateZExt(waitV, llvm::Type::getInt64Ty(ctx));
+                builder.CreateCall(waitFn, {srcLocInfo, waitV});
+              }
+            }
+
             // Begin data region
             emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal,
                             deviceTypeVal, argNumVal, argsBasePtr, argsPtr,
-                            argSizesPtr, maptypesArg, mapnamesArg, -1);
+                            argSizesPtr, maptypesArg, mapnamesArg, asyncArg);
 
             // Convert the region body
             llvm::BasicBlock *entryBlock = nullptr;
@@ -1506,7 +1540,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             builder.SetInsertPoint(endBlock);
             emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal,
                             deviceTypeVal, argNumVal, argsBasePtr, argsPtr,
-                            argSizesPtr, maptypesArg, mapnamesArg, -1);
+                            argSizesPtr, maptypesArg, mapnamesArg, asyncArg);
 
             return success();
           })
