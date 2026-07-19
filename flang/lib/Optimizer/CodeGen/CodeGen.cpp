@@ -4755,6 +4755,52 @@ public:
     return mlir::success();
   }
 };
+
+/// Convert FIR argument types on GPU functions materialized by OpenACC
+/// routine lowering. GPUFuncOp is isolated from its parent module, so the
+/// generic func conversion patterns do not rewrite its entry block here.
+class GPUFuncSignatureConversion
+    : public mlir::OpConversionPattern<mlir::gpu::GPUFuncOp> {
+public:
+  using mlir::OpConversionPattern<mlir::gpu::GPUFuncOp>::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::gpu::GPUFuncOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::FunctionType oldType = op.getFunctionType();
+    mlir::TypeConverter::SignatureConversion functionConversion(
+        oldType.getNumInputs());
+    if (mlir::failed(getTypeConverter()->convertSignatureArgs(
+            oldType.getInputs(), functionConversion)))
+      return rewriter.notifyMatchFailure(op, "failed to convert GPU function arguments");
+
+    llvm::SmallVector<mlir::Type> newResults;
+    if (mlir::failed(
+            getTypeConverter()->convertTypes(oldType.getResults(), newResults)))
+      return rewriter.notifyMatchFailure(op, "failed to convert GPU function results");
+
+    if (!op.getBody().empty()) {
+      mlir::Block *entry = &op.getBody().front();
+      mlir::TypeConverter::SignatureConversion blockConversion(
+          entry->getNumArguments());
+      if (mlir::failed(getTypeConverter()->convertSignatureArgs(
+              oldType.getInputs(), blockConversion)))
+        return rewriter.notifyMatchFailure(op,
+                                           "failed to convert GPU entry block");
+      for (unsigned i = oldType.getNumInputs();
+           i < entry->getNumArguments(); ++i)
+        blockConversion.addInputs(i, entry->getArgument(i).getType());
+      rewriter.applySignatureConversion(entry, blockConversion,
+                                        getTypeConverter());
+    }
+
+    mlir::FunctionType newType = mlir::FunctionType::get(
+        rewriter.getContext(), functionConversion.getConvertedTypes(),
+        newResults);
+    rewriter.modifyOpInPlace(op, [&] { op.setFunctionType(newType); });
+    return mlir::success();
+  }
+};
 } // namespace
 
 namespace {
@@ -4894,6 +4940,9 @@ public:
     // Flang specific overloads for OpenACC operations, to convert FIR types
     // (e.g., !fir.ref<!fir.array<...>>) to LLVM ptr types.
     fir::populateOpenACCFIRToLLVMConversionPatterns(typeConverter, pattern);
+    // gpu.func implements FunctionOpInterface, but is not a func.func. Keep
+    // its signature conversion available for ACC routines in GPU modules.
+    pattern.add<GPUFuncSignatureConversion>(typeConverter, context);
 
     mlir::ConversionTarget target{*context};
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
@@ -4909,6 +4958,10 @@ public:
     // GPU dialect ops are legal as-is. ACCCGToGPU already generates i64
     // operands for gpu.launch, so no Index→i64 conversion is needed here.
     target.addLegalDialect<mlir::gpu::GPUDialect>();
+    target.addDynamicallyLegalOp<mlir::gpu::GPUFuncOp>(
+        [&](mlir::gpu::GPUFuncOp op) {
+          return typeConverter.isSignatureLegal(op.getFunctionType());
+        });
 
     // required NOPs for applying a full conversion
     target.addLegalOp<mlir::ModuleOp>();
@@ -4931,10 +4984,51 @@ public:
           });
     }
 
-    // apply the patterns
+    // Apply the patterns to the host module first. GPU modules are isolated
+    // from above and therefore are not traversed by this conversion.
     if (mlir::failed(mlir::applyFullConversion(getModule(), target,
                                                std::move(pattern)))) {
       signalPassFailure();
+    }
+
+    // ACCRoutineToGPUFunc materializes device routines before FIR lowering.
+    // Run the same conversion in those pre-existing GPU modules so their
+    // signatures and bodies are ready for the later GPU-to-NVVM conversion.
+    for (mlir::gpu::GPUModuleOp gpuMod : mod.getOps<mlir::gpu::GPUModuleOp>()) {
+      for (mlir::gpu::GPUFuncOp gpuFunc : gpuMod.getOps<mlir::gpu::GPUFuncOp>()) {
+        mlir::RewritePatternSet gpuPattern(context);
+        fir::populateFIRToLLVMConversionPatterns(typeConverter, gpuPattern,
+                                                  options);
+        mlir::populateFuncToLLVMConversionPatterns(typeConverter, gpuPattern);
+        mlir::populateOpenMPToLLVMConversionPatterns(typeConverter, gpuPattern);
+        mlir::arith::populateArithToLLVMConversionPatterns(typeConverter,
+                                                            gpuPattern);
+        mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
+                                                               gpuPattern);
+        mlir::cf::populateAssertToLLVMConversionPattern(typeConverter,
+                                                          gpuPattern);
+        if (!isAMDGCN && !isNVPTX)
+          mlir::populateMathToLibmConversionPatterns(gpuPattern);
+        mlir::populateComplexToLLVMConversionPatterns(typeConverter,
+                                                       gpuPattern);
+        mlir::index::populateIndexToLLVMConversionPatterns(typeConverter,
+                                                            gpuPattern);
+        mlir::populateVectorToLLVMConversionPatterns(typeConverter,
+                                                      gpuPattern);
+        mlir::ub::populateUBToLLVMConversionPatterns(typeConverter, gpuPattern);
+        fir::populateOpenMPFIRToLLVMConversionPatterns(typeConverter,
+                                                        gpuPattern);
+        fir::populateOpenACCFIRToLLVMConversionPatterns(typeConverter,
+                                                         gpuPattern);
+        gpuPattern.add<GPUFuncSignatureConversion>(typeConverter, context);
+
+        if (mlir::failed(mlir::applyFullConversion(gpuFunc.getOperation(),
+                                                   target,
+                                                   std::move(gpuPattern)))) {
+          signalPassFailure();
+          return;
+        }
+      }
     }
 
     // Run pass to add comdats to functions that have weak linkage on relevant

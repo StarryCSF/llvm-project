@@ -651,6 +651,7 @@ void fir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::UpdateOp, mlir::acc::HostDataOp,
       mlir::acc::TerminatorOp, mlir::acc::YieldOp,
       mlir::acc::DeclareDeviceResidentOp, mlir::acc::DeclareLinkOp,
+      mlir::acc::RoutineOp,
       mlir::acc::InitOp, mlir::acc::ShutdownOp,
       mlir::acc::SetOp, mlir::acc::WaitOp, mlir::acc::AtomicReadOp,
       mlir::acc::AtomicWriteOp, mlir::acc::AtomicCaptureOp,

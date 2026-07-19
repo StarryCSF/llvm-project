@@ -2164,6 +2164,11 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             // Loop op - NOP for now, region body handled by enclosing function.
             return success();
           })
+      .Case<acc::RoutineOp>([](auto) {
+        // The routine declaration is consumed by the OpenACC routine passes;
+        // it carries no runtime behavior into LLVM IR.
+        return success();
+      })
       .Default([&](Operation *op) {
         return op->emitError("unsupported OpenACC operation: ")
                << op->getName();

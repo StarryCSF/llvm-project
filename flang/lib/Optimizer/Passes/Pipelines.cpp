@@ -294,6 +294,8 @@ void createDefaultFIROptimizerPassPipeline(mlir::PassManager &pm,
   pm.addPass(mlir::acc::createACCDeclareGPUModuleInsertion());
   pm.addPass(mlir::acc::createACCRoutineToGPUFunc());
   pm.addNestedPass<mlir::func::FuncOp>(mlir::acc::createACCCGToGPU());
+  pm.nest<mlir::gpu::GPUModuleOp>().addNestedPass<mlir::gpu::GPUFuncOp>(
+      mlir::acc::createACCCGToGPU());
   // Note: gpu-kernel-outlining is deferred until after FIR-to-LLVM so that
   // FIR types inside gpu.launch regions are converted first.
   pm.addPass(mlir::createConvertOpenACCToSCFPass());

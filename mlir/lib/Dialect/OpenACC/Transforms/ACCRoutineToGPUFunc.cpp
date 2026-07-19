@@ -65,6 +65,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/OpenACC/Analysis/OpenACCSupport.h"
 #include "mlir/Dialect/OpenACC/OpenACC.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -298,6 +299,17 @@ public:
       return signalPassFailure();
     }
     gpu::GPUModuleOp gpuMod = *gpuModOpt;
+
+    // ACC routines are materialized into the shared OpenACC GPU module before
+    // kernel outlining. Give that module the same default NVVM target and
+    // offloading handler used for newly outlined kernel modules.
+    if (!gpuMod.getTargetsAttr()) {
+      OpBuilder builder(mod.getContext());
+      auto nvvmTarget = NVVM::NVVMTargetAttr::get(mod.getContext());
+      gpuMod.setTargetsAttr(builder.getArrayAttr({nvvmTarget}));
+      gpuMod.setOffloadingHandlerAttr(
+          gpu::SelectObjectAttr::get(mod.getContext(), nvvmTarget));
+    }
 
     SymbolTable symTab(mod);
     SymbolTable gpuSymTab(gpuMod);
