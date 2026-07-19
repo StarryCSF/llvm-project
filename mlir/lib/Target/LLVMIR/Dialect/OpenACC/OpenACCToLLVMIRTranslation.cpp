@@ -197,6 +197,18 @@ static llvm::Function *getAccDataUpdateFunction(llvm::Module &module,
           .getCallee());
 }
 
+/// Get or create __tgt_acc_get_deviceptr used by host_data use_device.
+static llvm::Function *getAccGetDevicePtrFunction(llvm::Module &module,
+                                                    llvm::LLVMContext &ctx) {
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_get_deviceptr",
+          llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy, i64Ty, ptrTy}, false))
+          .getCallee());
+}
+
 //===----------------------------------------------------------------------===//
 // OpenACC Data Operation Call Helper
 //===----------------------------------------------------------------------===//
@@ -213,6 +225,78 @@ static void emitAccDataCall(llvm::IRBuilderBase &builder, llvm::Function *fn,
   builder.CreateCall(fn, {srcLocInfo, flagsArg, deviceTypeArg, argNumVal,
                           argsBasePtr, argsPtr, argSizesPtr, maptypesArg,
                           mapnamesArg, nullPtr, nullPtr, asyncVal});
+}
+
+static llvm::Value *createSourceLocationInfo(OpenACCIRBuilder &builder,
+                                             Operation *op);
+
+/// Converts acc.use_device into a lookup of the device address for its host
+/// variable. The result is used by operations inside the host_data region.
+static LogicalResult
+convertUseDeviceOp(acc::UseDeviceOp op, llvm::IRBuilderBase &builder,
+                   LLVM::ModuleTranslation &moduleTranslation) {
+  llvm::Value *varPtr = moduleTranslation.lookupValue(op.getVarPtr());
+  if (!varPtr) {
+    op.emitError("could not find LLVM value for varPtr");
+    return failure();
+  }
+
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+  llvm::Value *srcLocInfo = createSourceLocationInfo(
+      *moduleTranslation.getOpenMPBuilder(), op);
+  llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+      llvm::PointerType::getUnqual(ctx));
+  llvm::Value *devicePtr = builder.CreateCall(
+      getAccGetDevicePtrFunction(*module, ctx),
+      {srcLocInfo, nullPtr, builder.getInt64(0), varPtr});
+  moduleTranslation.mapValue(op.getAccPtr(), devicePtr);
+  return success();
+}
+
+/// Converts an acc.host_data region. The region itself does not create a new
+/// mapping; use_device operations inside it retrieve pointers from the active
+/// OpenACC data environment.
+static LogicalResult
+convertHostDataOp(acc::HostDataOp op, llvm::IRBuilderBase &builder,
+                  LLVM::ModuleTranslation &moduleTranslation) {
+  if (op.getRegion().empty())
+    return success();
+
+  llvm::LLVMContext &ctx = builder.getContext();
+  llvm::BasicBlock *entryBlock = nullptr;
+  for (Block &bb : op.getRegion()) {
+    llvm::BasicBlock *llvmBB = llvm::BasicBlock::Create(
+        ctx, "acc.host_data", builder.GetInsertBlock()->getParent());
+    if (!entryBlock)
+      entryBlock = llvmBB;
+    moduleTranslation.mapBlock(&bb, llvmBB);
+  }
+
+  llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(
+      ctx, "acc.end_host_data", builder.GetInsertBlock()->getParent());
+  if (auto ifCond = op.getIfCond()) {
+    llvm::Value *cond = moduleTranslation.lookupValue(ifCond);
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+    builder.CreateCondBr(cond, entryBlock, endBlock);
+  } else {
+    builder.CreateBr(entryBlock);
+  }
+
+  SetVector<Block *> blocks = getBlocksSortedByDominance(op.getRegion());
+  for (Block *bb : blocks) {
+    if (failed(moduleTranslation.convertBlock(*bb, bb->isEntryBlock(),
+                                              builder)))
+      return failure();
+    if (isa<acc::TerminatorOp, acc::YieldOp>(bb->getTerminator()))
+      builder.CreateBr(endBlock);
+  }
+
+  builder.SetInsertPoint(endBlock);
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1455,6 +1539,9 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return convertStandaloneDataOp<acc::UpdateOp>(updateOp, builder,
                                                       moduleTranslation);
       })
+      .Case([&](acc::HostDataOp hostDataOp) {
+        return convertHostDataOp(hostDataOp, builder, moduleTranslation);
+      })
       .Case([&](acc::InitOp initOp) {
         return convertInitOp(initOp, builder, moduleTranslation);
       })
@@ -1511,6 +1598,9 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               moduleTranslation.mapValue(op.getAccPtr(), varPtrVal);
             return success();
           })
+      .Case<acc::UseDeviceOp>([&](acc::UseDeviceOp op) {
+        return convertUseDeviceOp(op, builder, moduleTranslation);
+      })
       .Case<acc::GetDevicePtrOp>([&](acc::GetDevicePtrOp op) {
             llvm::Value *varPtrVal = moduleTranslation.lookupValue(op.getVarPtr());
             if (!varPtrVal) {
