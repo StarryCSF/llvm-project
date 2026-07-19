@@ -270,6 +270,57 @@ static llvm::Function *getAssociatedFunction(OpenACCIRBuilder &builder,
   llvm_unreachable("Unknown OpenACC operation");
 }
 
+/// Return the data-clause result that produced `var` for an OpenACC
+/// operation. The mapper receives the underlying FIR/LLVM pointer, while the
+/// data-entry operation carries the original variable type needed to decide
+/// whether PTR_AND_OBJ applies.
+static ValueRange getDataOperandsForMapping(Operation *op) {
+  if (auto kernelEnv = dyn_cast<acc::KernelEnvironmentOp>(op))
+    return kernelEnv.getDataClauseOperands();
+  return acc::getDataOperands(op);
+}
+
+static Operation *findDataEntryForMapping(Operation *op, Value var) {
+  for (Value dataOperand : getDataOperandsForMapping(op)) {
+    Operation *entry = dataOperand.getDefiningOp();
+    if (entry && acc::getVar(entry) == var)
+      return entry;
+  }
+  for (Operation *user : var.getUsers()) {
+    if (acc::getVar(user) == var && acc::getVarType(user))
+      return user;
+  }
+  return nullptr;
+}
+
+/// Scalar data operands are passed directly to the runtime. Arrays and
+/// pointer-like objects retain PTR_AND_OBJ and use the runtime's dynamic size
+/// calculation.
+static bool getScalarMappingSize(Operation *parent, Value var,
+                                 LLVM::ModuleTranslation &moduleTranslation,
+                                 uint64_t &size) {
+  Operation *entry = findDataEntryForMapping(parent, var);
+  if (!entry)
+    return false;
+
+  Type varType = acc::getVarType(entry);
+  if (!varType)
+    return false;
+
+  llvm::Type *llvmVarType = moduleTranslation.convertType(varType);
+  if (!llvmVarType ||
+      !(llvmVarType->isIntegerTy() || llvmVarType->isFloatingPointTy()))
+    return false;
+
+  llvm::TypeSize typeSize =
+      moduleTranslation.getLLVMModule()->getDataLayout().getTypeAllocSize(
+          llvmVarType);
+  if (typeSize.isScalable())
+    return false;
+  size = typeSize.getFixedValue();
+  return true;
+}
+
 /// Extract pointer, size and mapping information from operands
 /// to populate the future functions arguments.
 static LogicalResult
@@ -292,11 +343,18 @@ processOperands(llvm::IRBuilderBase &builder,
     llvm::Value *dataPtrBase;
     llvm::Value *dataPtr;
     llvm::Value *dataSize;
+    uint64_t scalarSize = 0;
+    bool isScalar = getScalarMappingSize(op, data, moduleTranslation,
+                                         scalarSize);
 
     if (isa<LLVM::LLVMPointerType>(data.getType())) {
       dataPtrBase = dataValue;
       dataPtr = dataValue;
-      dataSize = accBuilder->getSizeInBytes(dataValue);
+      dataSize = isScalar ? builder.getInt64(scalarSize)
+                          : accBuilder->getSizeInBytes(dataValue);
+      if (isScalar)
+        dataPtrBase = llvm::ConstantPointerNull::get(
+            llvm::PointerType::getUnqual(ctx));
     } else {
       return op->emitOpError()
              << "Data operand must be legalized before translation."
@@ -322,7 +380,7 @@ processOperands(llvm::IRBuilderBase &builder,
         {builder.getInt32(0), builder.getInt32(index)});
     builder.CreateStore(dataSize, sizeGEP);
 
-    flags.push_back(operandFlag);
+    flags.push_back(isScalar ? (operandFlag & ~kPtrAndObjFlag) : operandFlag);
     llvm::Constant *mapName =
         mlir::LLVM::createMappingInformation(data.getLoc(), *accBuilder);
     names.push_back(mapName);
@@ -759,7 +817,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag | kHoldFlag,
+                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
                              flags, names, index, mapperAllocas)))
     return failure();
 
@@ -939,7 +997,7 @@ static LogicalResult convertComputeOp(OpTy &op,
 
   // Copyin → TO
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag | kHoldFlag,
+                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
                              flags, names, index, mapperAllocas)))
     return failure();
 
@@ -1417,7 +1475,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                    deviceptrOperands.size();
 
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, copyin,
-                                       nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag | kHoldFlag,
+                                       nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
                                        flags, names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, deleteOperands,
@@ -1449,6 +1507,38 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                        names, index, mapperAllocas)))
               return failure();
 
+            SmallVector<uint64_t> endFlags;
+            auto appendEndFlags = [&](ValueRange operands, uint64_t flag) {
+              for (Value data : operands) {
+                uint64_t scalarSize = 0;
+                bool isScalar = getScalarMappingSize(
+                    kernelEnvOp, data, moduleTranslation, scalarSize);
+                endFlags.push_back(isScalar ? (flag & ~kPtrAndObjFlag) : flag);
+              }
+            };
+            appendEndFlags(copyin, kDeleteFlag);
+            appendEndFlags(deleteOperands, kDeleteFlag);
+            appendEndFlags(copyout, kHostCopyoutFlag | kPtrAndObjFlag);
+            for (Value data : create) {
+              auto *createOp = findDataEntryForMapping(kernelEnvOp, data);
+              bool isCopyout = createOp &&
+                               (cast<acc::CreateOp>(createOp).getDataClause() ==
+                                    acc::DataClause::acc_copyout ||
+                                cast<acc::CreateOp>(createOp).getDataClause() ==
+                                    acc::DataClause::acc_copyout_zero);
+              uint64_t flag = isCopyout
+                                  ? (kHostCopyoutFlag | kPtrAndObjFlag)
+                                  : (kDeleteFlag | kPtrAndObjFlag);
+              uint64_t scalarSize = 0;
+              bool isScalar = getScalarMappingSize(
+                  kernelEnvOp, data, moduleTranslation, scalarSize);
+              endFlags.push_back(isScalar ? (flag & ~kPtrAndObjFlag) : flag);
+            }
+            appendEndFlags(present, kPresentFlag | kHoldFlag);
+            appendEndFlags(noCreateOperands, kNoCreateFlag | kPtrAndObjFlag);
+            appendEndFlags(attachOperands, kAttachFlag | kPtrAndObjFlag);
+            appendEndFlags(deviceptrOperands, kDevicePtrFlag | kPtrAndObjFlag);
+
             llvm::GlobalVariable *maptypes =
                 accBuilder->createOffloadMaptypes(flags, ".offload_maptypes");
             llvm::Value *maptypesArg = builder.CreateConstInBoundsGEP2_32(
@@ -1460,6 +1550,11 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             llvm::Value *mapnamesArg = builder.CreateConstInBoundsGEP2_32(
                 llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), totalNbOperand),
                 mapnames, 0, 0);
+            llvm::GlobalVariable *endMaptypes =
+                accBuilder->createOffloadMaptypes(endFlags, ".offload_maptypes_end");
+            llvm::Value *endMaptypesArg = builder.CreateConstInBoundsGEP2_32(
+                llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), totalNbOperand),
+                endMaptypes, 0, 0);
 
             auto *flagsVal = builder.getInt64(0);
             auto *deviceTypeVal = builder.getInt64(0);
@@ -1540,7 +1635,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             builder.SetInsertPoint(endBlock);
             emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal,
                             deviceTypeVal, argNumVal, argsBasePtr, argsPtr,
-                            argSizesPtr, maptypesArg, mapnamesArg, asyncArg);
+                            argSizesPtr, endMaptypesArg, mapnamesArg, asyncArg);
 
             return success();
           })
