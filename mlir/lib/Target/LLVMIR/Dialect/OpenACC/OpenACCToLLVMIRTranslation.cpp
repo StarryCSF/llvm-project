@@ -262,7 +262,13 @@ static llvm::Function *getAssociatedFunction(OpenACCIRBuilder &builder,
       .Case([&](acc::EnterDataOp) {
         return getAccDataEnterFunction(module, ctx);
       })
+      .Case([&](acc::DeclareEnterOp) {
+        return getAccDataEnterFunction(module, ctx);
+      })
       .Case([&](acc::ExitDataOp) {
+        return getAccDataExitFunction(module, ctx);
+      })
+      .Case([&](acc::DeclareExitOp) {
         return getAccDataExitFunction(module, ctx);
       })
       .Case([&](acc::UpdateOp) {
@@ -306,6 +312,11 @@ static bool getScalarMappingSize(Operation *parent, Value var,
 
   Type varType = acc::getVarType(entry);
   if (!varType)
+    return false;
+
+  // Aggregate FIR types are sized dynamically by the mapper. Only builtin
+  // scalar types can be converted directly at this stage.
+  if (!isa<IntegerType, FloatType>(varType))
     return false;
 
   llvm::Type *llvmVarType = moduleTranslation.convertType(varType);
@@ -531,6 +542,117 @@ processDataOperands(llvm::IRBuilderBase &builder,
   if (failed(processOperands(builder, moduleTranslation, op, to, to.size(),
                              kDeviceCopyinFlag | kPtrAndObjFlag, flags, names, index,
                              mapperAllocas)))
+    return failure();
+  return success();
+}
+
+/// Process data operands from acc::DeclareEnterOp. Declare uses the same
+/// runtime entry point as enter_data, but its verifier permits a smaller set
+/// of data entry operations and also includes device-resident/link entries.
+static LogicalResult
+processDataOperands(llvm::IRBuilderBase &builder,
+                    LLVM::ModuleTranslation &moduleTranslation,
+                    acc::DeclareEnterOp op, SmallVector<uint64_t> &flags,
+                    SmallVectorImpl<llvm::Constant *> &names,
+                    struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
+  unsigned index = 0;
+  llvm::SmallVector<mlir::Value> copyin, create, present, deviceptr;
+
+  for (mlir::Value dataOp : op.getDataClauseOperands()) {
+    Operation *entry = dataOp.getDefiningOp();
+    if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(entry))
+      copyin.push_back(copyinOp.getVarPtr());
+    else if (auto createOp = mlir::dyn_cast_or_null<acc::CreateOp>(entry))
+      create.push_back(createOp.getVarPtr());
+    else if (auto presentOp = mlir::dyn_cast_or_null<acc::PresentOp>(entry))
+      present.push_back(presentOp.getVarPtr());
+    else if (mlir::isa_and_nonnull<acc::DeclareDeviceResidentOp>(entry))
+      create.push_back(acc::getVarPtr(entry));
+    else if (mlir::isa_and_nonnull<acc::DeclareLinkOp>(entry))
+      copyin.push_back(acc::getVarPtr(entry));
+    else if (mlir::isa_and_nonnull<acc::DevicePtrOp, acc::GetDevicePtrOp>(entry))
+      deviceptr.push_back(acc::getVarPtr(entry));
+  }
+
+  unsigned totalNbOperand = copyin.size() + create.size() + present.size() +
+                            deviceptr.size();
+  if (failed(processOperands(builder, moduleTranslation, op, copyin,
+                             totalNbOperand,
+                             kDeviceCopyinFlag | kPtrAndObjFlag, flags, names,
+                             index, mapperAllocas)))
+    return failure();
+  if (failed(processOperands(builder, moduleTranslation, op, create,
+                             totalNbOperand, kCreateFlag | kPtrAndObjFlag,
+                             flags, names, index, mapperAllocas)))
+    return failure();
+  if (failed(processOperands(builder, moduleTranslation, op, present,
+                             totalNbOperand, kPresentFlag | kHoldFlag, flags,
+                             names, index, mapperAllocas)))
+    return failure();
+  if (failed(processOperands(builder, moduleTranslation, op, deviceptr,
+                             totalNbOperand, kDevicePtrFlag | kPtrAndObjFlag,
+                             flags, names, index, mapperAllocas)))
+    return failure();
+  return success();
+}
+
+/// Process data operands from acc::DeclareExitOp. A direct declare data entry
+/// is released as delete unless its acc pointer has an explicit exit action.
+static LogicalResult
+processDataOperands(llvm::IRBuilderBase &builder,
+                    LLVM::ModuleTranslation &moduleTranslation,
+                    acc::DeclareExitOp op, SmallVector<uint64_t> &flags,
+                    SmallVectorImpl<llvm::Constant *> &names,
+                    struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
+  unsigned index = 0;
+  llvm::SmallVector<mlir::Value> deleteOperands, copyoutOperands,
+      detachOperands;
+
+  for (mlir::Value dataOp : op.getDataClauseOperands()) {
+    Operation *entry = dataOp.getDefiningOp();
+    if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(entry)) {
+      for (auto &u : devicePtrOp.getAccPtr().getUses()) {
+        if (mlir::isa<acc::DeleteOp>(u.getOwner()))
+          deleteOperands.push_back(devicePtrOp.getVarPtr());
+        else if (mlir::isa<acc::CopyoutOp>(u.getOwner()))
+          copyoutOperands.push_back(devicePtrOp.getVarPtr());
+        else if (mlir::isa<acc::DetachOp>(u.getOwner()))
+          detachOperands.push_back(devicePtrOp.getVarPtr());
+      }
+    } else if (entry && acc::getVarPtr(entry)) {
+      bool hasExplicitAction = false;
+      for (auto &u : acc::getAccPtr(entry).getUses()) {
+        if (mlir::isa<acc::DeleteOp>(u.getOwner())) {
+          deleteOperands.push_back(acc::getVarPtr(entry));
+          hasExplicitAction = true;
+        } else if (mlir::isa<acc::CopyoutOp>(u.getOwner())) {
+          copyoutOperands.push_back(acc::getVarPtr(entry));
+          hasExplicitAction = true;
+        } else if (mlir::isa<acc::DetachOp>(u.getOwner())) {
+          detachOperands.push_back(acc::getVarPtr(entry));
+          hasExplicitAction = true;
+        }
+      }
+      if (!hasExplicitAction)
+        deleteOperands.push_back(acc::getVarPtr(entry));
+    }
+  }
+
+  unsigned totalNbOperand = deleteOperands.size() + copyoutOperands.size() +
+                            detachOperands.size();
+  if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
+                             totalNbOperand, kDeleteFlag | kPtrAndObjFlag,
+                             flags, names, index, mapperAllocas)))
+    return failure();
+  if (failed(processOperands(builder, moduleTranslation, op, copyoutOperands,
+                             totalNbOperand,
+                             kHostCopyoutFlag | kPtrAndObjFlag, flags, names,
+                             index, mapperAllocas)))
+    return failure();
+  if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
+                             totalNbOperand,
+                             kAttachFlag | kDeleteFlag | kPtrAndObjFlag,
+                             flags, names, index, mapperAllocas)))
     return failure();
   return success();
 }
@@ -1240,8 +1362,8 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
   auto *mapperFunc = getAssociatedFunction(*accBuilder, op, *module, ctx);
 
-  // Number of arguments in the enter_data operation.
-  unsigned totalNbOperand = op.getNumDataOperands();
+  // Number of arguments in the standalone data operation.
+  unsigned totalNbOperand = op.getDataClauseOperands().size();
 
   struct OpenACCIRBuilder::MapperAllocas mapperAllocas;
   OpenACCIRBuilder::InsertPointTy allocaIP(
@@ -1317,9 +1439,17 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return convertStandaloneDataOp<acc::EnterDataOp>(enterDataOp, builder,
                                                          moduleTranslation);
       })
+      .Case([&](acc::DeclareEnterOp declareEnterOp) {
+        return convertStandaloneDataOp<acc::DeclareEnterOp>(
+            declareEnterOp, builder, moduleTranslation);
+      })
       .Case([&](acc::ExitDataOp exitDataOp) {
         return convertStandaloneDataOp<acc::ExitDataOp>(exitDataOp, builder,
                                                         moduleTranslation);
+      })
+      .Case([&](acc::DeclareExitOp declareExitOp) {
+        return convertStandaloneDataOp<acc::DeclareExitOp>(
+            declareExitOp, builder, moduleTranslation);
       })
       .Case([&](acc::UpdateOp updateOp) {
         return convertStandaloneDataOp<acc::UpdateOp>(updateOp, builder,
@@ -1349,7 +1479,8 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return success();
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::PresentOp,
-            acc::NoCreateOp, acc::AttachOp>(
+            acc::NoCreateOp, acc::AttachOp, acc::DeclareDeviceResidentOp,
+            acc::DeclareLinkOp>(
           [&](auto op) {
             // Data entry ops: map their result (accPtr) to the varPtr's LLVM value.
             llvm::Value *varPtrVal = moduleTranslation.lookupValue(op.getVarPtr());
