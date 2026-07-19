@@ -42,8 +42,8 @@ def OpenACC_ReductionInitOp
     contains the recipe's init code and must yield a single value (the private
     reduction storage) via `acc.yield`.
 
-    The var operand is the original/shared reduction variable. The
-    reduction_operator specifies the reduction kind (e.g. add, mul).
+    The `var` operand is the original/shared reduction variable. The
+    `reduction_operator` specifies the reduction kind (e.g. add, mul).
   }];
   let arguments = (ins OpenACC_AnyPointerOrMappableType:$var,
                        OpenACC_ReductionOperatorAttr:$reductionOperator);
@@ -74,8 +74,8 @@ def OpenACC_ReductionCombineRegionOp
     value(s) in the original/shared reduction variable. The region is
     terminated by `acc.yield` with no operands.
 
-    The destVar operand is the original/shared reduction variable.
-    The srcVar operand is typically the result of acc.reduction_init.
+    The `destVar` operand is the original/shared reduction variable.
+    The `srcVar` operand is typically the result of acc.reduction_init.
   }];
   let arguments = (ins OpenACC_AnyPointerOrMappableType:$destVar,
                        OpenACC_AnyPointerOrMappableType:$srcVar);
@@ -113,11 +113,11 @@ def OpenACC_ReductionCombineOp: OpenACC_Op<"reduction_combine",
       memref.store %combine, %dest[] : memref<i32>
     ```
     
-    The $destMemref operand is a "pointer" to the original reduction 
-    variable (typically shared). The $srcMemref operand is a "pointer"
+    The `destMemref` operand is a "pointer" to the original reduction 
+    variable (typically shared). The `srcMemref` operand is a "pointer"
     to the partial sum of the reduction (typically private).
 
-    The $kind is the OpenACC reduction operator that determines how to 
+    The `kind` is the OpenACC reduction operator that determines how to 
     accumulate the two values.
   }];
 
@@ -398,11 +398,11 @@ def OpenACC_ParWidthOp
     %w2 = acc.par_width {par_dim = #acc.par_dim<block_x>}
     ```
   }];
-  let arguments = (ins Optional<Index>:$launchArg,
+  let arguments = (ins Optional<AnyTypeOf<[Index, AnyInteger]>>:$launchArg,
                        OpenACC_GPUParallelDimAttr:$par_dim);
-  let results = (outs Index:$output);
+  let results = (outs AnyTypeOf<[Index, AnyInteger]>:$output);
   let assemblyFormat = [{
-    ($launchArg^)? attr-dict
+    ($launchArg^ `:` type($launchArg))? attr-dict `:` type($output)
   }];
 }
 
@@ -520,7 +520,7 @@ def OpenACC_ComputeRegionOp
                  [OffloadRegionOpInterface, AffineScope,
                   RecursiveMemoryEffects,
                   SingleBlockImplicitTerminator<"YieldOp">,
-                  AttrSizedOperandSegments]> {
+                  IsolatedFromAbove, AttrSizedOperandSegments]> {
   let summary = "Compute region for GPU execution";
   let description = [{
     The `acc.compute_region` operation wraps a region of code that will be
@@ -531,6 +531,18 @@ def OpenACC_ComputeRegionOp
     mapping facilities that the `acc` dialect provides. It serves as the
     bridge between the high-level representation and the `gpu.launch`
     operation.
+
+    The operation is `IsolatedFromAbove`: all values used inside the
+    region must be explicitly captured. Values are captured in two ways:
+
+    - Launch arguments (`launch`): Results of `acc.par_width`
+      operations that define the parallel launch configuration. These
+      become `index`-typed block arguments representing the parallel
+      width for each dimension.
+
+    - Input arguments (`ins`): Arbitrary values captured from outside
+      the region (data pointers, scalars, etc.). These become block
+      arguments with their original types.
 
     The `origin` attribute records which construct produced this compute
     region (e.g., `"acc.parallel"`, `"acc.kernels"`). This is intended to
@@ -560,7 +572,7 @@ def OpenACC_ComputeRegionOp
     ```
   }];
 
-  let arguments = (ins Variadic<Index>:$launchArgs,
+  let arguments = (ins Variadic<AnyTypeOf<[Index, AnyInteger]>>:$launchArgs,
                        Variadic<AnyType>:$inputArgs,
                        Optional<OpenACC_GPUAsyncTokenType>:$stream,
                        StrAttr:$origin,

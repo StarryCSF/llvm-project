@@ -1217,11 +1217,31 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             acc::ReductionInitOp,
             acc::ReductionCombineOp, acc::ReductionCombineRegionOp,
             acc::ReductionAccumulateOp, acc::ReductionAccumulateArrayOp,
-            acc::ParWidthOp, acc::GPUSharedMemoryOp>([](auto op) {
+            acc::GPUSharedMemoryOp>([](auto op) {
         // NOP - these ops are handled by the region body or are
         // intermediate representations consumed by later passes.
         return success();
       })
+      .Case<acc::ParWidthOp>(
+          [&](acc::ParWidthOp op) {
+            // ParWidthOp returns a width value for a GPU dimension.
+            // For sequential: return 1, otherwise return the launchArg value
+            // or 0 if unknown.
+            llvm::Value *result = nullptr;
+            if (op.getLaunchArg()) {
+              result = moduleTranslation.lookupValue(op.getLaunchArg());
+              if (!result) {
+                op.emitError("could not find LLVM value for launchArg");
+                return failure();
+              }
+            } else if (op.getParDim().isSeq()) {
+              result = builder.getInt64(1);
+            } else {
+              result = builder.getInt64(0);
+            }
+            moduleTranslation.mapValue(op.getResult(), result);
+            return success();
+          })
       .Case<acc::ComputeRegionOp>(
           [&](acc::ComputeRegionOp computeOp) {
             // Handle compute_region by inlining its region body into the

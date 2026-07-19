@@ -138,7 +138,7 @@ buildRoutineBody(func::FuncOp deviceFunc, func::FuncOp hostFunc,
 
   rewriter.setInsertionPointToStart(newBlock);
   GPUParallelDimAttr parDim = policy.map(ctx, parLevel);
-  Value parWidthVal = ParWidthOp::create(rewriter, loc, Value(), parDim);
+  Value parWidthVal = ParWidthOp::create(rewriter, loc, rewriter.getIndexType(), Value(), parDim);
   SmallVector<Value, 4> inputArgs(newBlock->getArguments().begin(),
                                   newBlock->getArguments().end());
 

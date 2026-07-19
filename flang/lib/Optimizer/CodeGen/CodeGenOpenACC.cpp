@@ -526,6 +526,7 @@ struct PredicateRegionOpConversion
 };
 
 /// acc.par_width - parallel width specification.
+/// Convert index-typed result to i64 for LLVM compatibility.
 struct ParWidthOpConversion
     : public OpenACCFIROpConversion<mlir::acc::ParWidthOp> {
   using OpenACCFIROpConversion::OpenACCFIROpConversion;
@@ -533,9 +534,21 @@ struct ParWidthOpConversion
   llvm::LogicalResult
   matchAndRewrite(mlir::acc::ParWidthOp curOp, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    rewriter.modifyOpInPlace(curOp, [&]() {
-      curOp->setOperands(adaptor.getOperands());
-    });
+    // If the result type is already legal (not index), just update operands.
+    if (typeConverter->isLegal(curOp.getResult().getType())) {
+      rewriter.modifyOpInPlace(curOp, [&]() {
+        curOp->setOperands(adaptor.getOperands());
+      });
+      return mlir::success();
+    }
+
+    // Result is index type - need to convert to i64.
+    // Replace the op with a version that returns i64.
+    auto i64Type = rewriter.getI64Type();
+    auto newOp = rewriter.create<mlir::acc::ParWidthOp>(
+        curOp.getLoc(), i64Type, adaptor.getLaunchArg(),
+        curOp.getParDimAttr());
+    rewriter.replaceOp(curOp, newOp.getResult());
     return mlir::success();
   }
 };
