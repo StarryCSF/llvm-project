@@ -336,6 +336,26 @@ struct WaitOpConversion : public OpenACCFIROpConversion<mlir::acc::WaitOp> {
   }
 };
 
+/// Convert OpenACC atomic update to LLVM-compatible operand and region types.
+/// The atomic semantics are emitted by the OpenACC LLVM translation interface
+/// after this FIR conversion has completed.
+struct AtomicUpdateOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::AtomicUpdateOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::AtomicUpdateOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(),
+                                           *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
 // ---- CG ops from OpenACC compute lowering pipeline ----
 
 /// acc.privatize - creates private storage handle.
@@ -585,7 +605,7 @@ void fir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::TerminatorOp, mlir::acc::YieldOp,
       mlir::acc::DeclareDeviceResidentOp, mlir::acc::DeclareLinkOp,
       mlir::acc::InitOp, mlir::acc::ShutdownOp,
-      mlir::acc::SetOp, mlir::acc::WaitOp>(
+      mlir::acc::SetOp, mlir::acc::WaitOp, mlir::acc::AtomicUpdateOp>(
       [&](mlir::Operation *op) {
     return typeConverter.isLegal(op->getOperandTypes()) &&
            typeConverter.isLegal(op->getResultTypes()) &&
@@ -693,6 +713,7 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<ShutdownOpConversion>(converter);
   patterns.add<SetOpConversion>(converter);
   patterns.add<WaitOpConversion>(converter);
+  patterns.add<AtomicUpdateOpConversion>(converter);
   patterns.add<ParallelOpConversion>(converter);
   patterns.add<SerialOpConversion>(converter);
   patterns.add<LoopOpConversion>(converter);

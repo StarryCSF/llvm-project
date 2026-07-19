@@ -21,6 +21,7 @@
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Frontend/OpenMP/OMPConstants.h"
 
 using namespace mlir;
@@ -740,6 +741,123 @@ static LogicalResult convertWaitOp(acc::WaitOp op,
   return success();
 }
 
+/// Convert an OpenACC atomic update through the common LLVM atomic builder.
+/// The update region is also used for non-trivial expressions, in which case
+/// the builder emits a compare-exchange loop instead of atomicrmw.
+static LogicalResult
+convertAccAtomicUpdate(acc::AtomicUpdateOp &opInst,
+                       llvm::IRBuilderBase &builder,
+                       LLVM::ModuleTranslation &moduleTranslation) {
+  auto &innerOpList = opInst.getRegion().front().getOperations();
+  bool isXBinopExpr = false;
+  llvm::AtomicRMWInst::BinOp binop = llvm::AtomicRMWInst::BinOp::BAD_BINOP;
+  mlir::Value mlirExpr;
+  llvm::Value *llvmExpr = nullptr;
+
+  if (innerOpList.size() == 2) {
+    Operation &innerOp = *opInst.getRegion().front().begin();
+    BlockArgument regionArg = opInst.getRegion().front().getArgument(0);
+    if (!llvm::is_contained(innerOp.getOperands(), regionArg))
+      return opInst.emitError(
+          "no atomic update operation with region argument as operand found");
+
+    binop = llvm::TypeSwitch<Operation *, llvm::AtomicRMWInst::BinOp>(&innerOp)
+                .Case([&](LLVM::AddOp) {
+                  return llvm::AtomicRMWInst::BinOp::Add;
+                })
+                .Case([&](LLVM::SubOp) {
+                  return llvm::AtomicRMWInst::BinOp::Sub;
+                })
+                .Case([&](LLVM::AndOp) {
+                  return llvm::AtomicRMWInst::BinOp::And;
+                })
+                .Case([&](LLVM::OrOp) {
+                  return llvm::AtomicRMWInst::BinOp::Or;
+                })
+                .Case([&](LLVM::XOrOp) {
+                  return llvm::AtomicRMWInst::BinOp::Xor;
+                })
+                .Case([&](LLVM::UMaxOp) {
+                  return llvm::AtomicRMWInst::BinOp::UMax;
+                })
+                .Case([&](LLVM::UMinOp) {
+                  return llvm::AtomicRMWInst::BinOp::UMin;
+                })
+                .Case([&](LLVM::FAddOp) {
+                  return llvm::AtomicRMWInst::BinOp::FAdd;
+                })
+                .Case([&](LLVM::FSubOp) {
+                  return llvm::AtomicRMWInst::BinOp::FSub;
+                })
+                .Default(llvm::AtomicRMWInst::BinOp::BAD_BINOP);
+    isXBinopExpr = innerOp.getOperand(0) == regionArg;
+    mlirExpr = isXBinopExpr ? innerOp.getOperand(1) : innerOp.getOperand(0);
+    llvmExpr = moduleTranslation.lookupValue(mlirExpr);
+  }
+
+  llvm::Value *llvmX = moduleTranslation.lookupValue(opInst.getX());
+  if (!llvmX)
+    return opInst.emitError("could not find LLVM value for atomic target");
+  llvm::Type *llvmXElementType = moduleTranslation.convertType(
+      opInst.getRegion().front().getArgument(0).getType());
+  if (!llvmXElementType)
+    return opInst.emitError("could not convert atomic element type");
+
+  llvm::OpenMPIRBuilder::AtomicOpValue llvmAtomicX = {
+      llvmX, llvmXElementType, /*isSigned=*/false, /*isVolatile=*/false};
+
+  auto updateFn = [&opInst, &moduleTranslation](
+                      llvm::Value *atomicx,
+                      llvm::IRBuilder<> &nestedBuilder)
+      -> llvm::Expected<llvm::Value *> {
+    Block &block = opInst.getRegion().front();
+    moduleTranslation.mapValue(block.getArgument(0), atomicx);
+    moduleTranslation.mapBlock(&block, nestedBuilder.GetInsertBlock());
+    if (failed(moduleTranslation.convertBlock(block, true, nestedBuilder)))
+      return llvm::make_error<llvm::StringError>(
+          "failed to convert atomic update region",
+          llvm::inconvertibleErrorCode());
+    auto yieldOp = dyn_cast<acc::YieldOp>(block.getTerminator());
+    if (!yieldOp || yieldOp.getNumOperands() != 1)
+      return llvm::make_error<llvm::StringError>(
+          "atomic update region must yield one value",
+          llvm::inconvertibleErrorCode());
+    return moduleTranslation.lookupValue(yieldOp.getOperand(0));
+  };
+
+  auto enclosingFuncOp =
+      opInst.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  // OpenMPIRBuilder requires a dedicated insertion point for allocas. During
+  // GPU module translation the current insertion point can be the end of the
+  // entry block, so split it before passing the entry block to the builder.
+  if (builder.GetInsertBlock() == &enclosingFunction->getEntryBlock() &&
+      builder.GetInsertPoint() == builder.GetInsertBlock()->end()) {
+    llvm::BasicBlock *bodyBlock = llvm::BasicBlock::Create(
+        builder.getContext(), "acc.atomic.body", enclosingFunction,
+        enclosingFunction->getEntryBlock().getNextNode());
+    builder.CreateBr(bodyBlock);
+    builder.SetInsertPoint(bodyBlock);
+  }
+  llvm::OpenMPIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  llvm::OpenMPIRBuilder::LocationDescription location(builder);
+  llvm::OpenMPIRBuilder::InsertPointOrErrorTy afterIP =
+      moduleTranslation.getOpenMPBuilder()->createAtomicUpdate(
+          location, allocaIP, llvmAtomicX, llvmExpr,
+          llvm::AtomicOrdering::Monotonic, binop, updateFn, isXBinopExpr);
+  if (!afterIP) {
+    llvm::handleAllErrors(afterIP.takeError(), [&](const llvm::ErrorInfoBase &e) {
+      opInst.emitError() << e.message();
+    });
+    return failure();
+  }
+  builder.restoreIP(*afterIP);
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Conversion functions
 //===----------------------------------------------------------------------===//
@@ -1218,6 +1336,10 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       })
       .Case([&](acc::WaitOp waitOp) {
         return convertWaitOp(waitOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::AtomicUpdateOp atomicUpdateOp) {
+        return convertAccAtomicUpdate(atomicUpdateOp, builder,
+                                      moduleTranslation);
       })
       .Case<acc::TerminatorOp, acc::YieldOp>([](auto op) {
         // `yield` and `terminator` can be just omitted. The block structure was
