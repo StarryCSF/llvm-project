@@ -951,6 +951,11 @@ static LogicalResult convertWaitOp(acc::WaitOp op,
   return success();
 }
 
+static LogicalResult
+convertAccAtomicUpdate(acc::AtomicUpdateOp &opInst,
+                       llvm::IRBuilderBase &builder,
+                       LLVM::ModuleTranslation &moduleTranslation);
+
 /// Convert an OpenACC atomic read through the common LLVM atomic builder.
 static LogicalResult
 convertAccAtomicRead(acc::AtomicReadOp &opInst,
@@ -1026,6 +1031,34 @@ convertAccAtomicWrite(acc::AtomicWriteOp &opInst,
       location, x, llvmExpr, llvm::AtomicOrdering::Monotonic,
       allocaIP));
   return success();
+}
+
+/// Convert the supported OpenACC atomic capture forms by lowering the nested
+/// atomic operations in their specified order.
+static LogicalResult
+convertAccAtomicCapture(acc::AtomicCaptureOp &opInst,
+                        llvm::IRBuilderBase &builder,
+                        LLVM::ModuleTranslation &moduleTranslation) {
+  bool converted = false;
+  for (Operation &nestedOp : opInst.getRegion().front()) {
+    if (auto readOp = dyn_cast<acc::AtomicReadOp>(&nestedOp)) {
+      if (failed(convertAccAtomicRead(readOp, builder, moduleTranslation)))
+        return failure();
+    } else if (auto writeOp = dyn_cast<acc::AtomicWriteOp>(&nestedOp)) {
+      if (failed(convertAccAtomicWrite(writeOp, builder, moduleTranslation)))
+        return failure();
+    } else if (auto updateOp = dyn_cast<acc::AtomicUpdateOp>(&nestedOp)) {
+      if (failed(convertAccAtomicUpdate(updateOp, builder, moduleTranslation)))
+        return failure();
+    } else if (!isa<acc::TerminatorOp>(&nestedOp)) {
+      return opInst.emitError("unsupported atomic capture operation");
+    } else {
+      continue;
+    }
+    converted = true;
+  }
+  return converted ? success()
+                   : opInst.emitError("unsupported atomic capture form");
 }
 
 /// Convert an OpenACC atomic update through the common LLVM atomic builder.
@@ -1645,6 +1678,10 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       .Case([&](acc::AtomicWriteOp atomicWriteOp) {
         return convertAccAtomicWrite(atomicWriteOp, builder, moduleTranslation);
       })
+      .Case([&](acc::AtomicCaptureOp atomicCaptureOp) {
+        return convertAccAtomicCapture(atomicCaptureOp, builder,
+                                       moduleTranslation);
+      })
       .Case<acc::TerminatorOp, acc::YieldOp>([](auto op) {
         // `yield` and `terminator` can be just omitted. The block structure was
         // created in the function that handles their parent operation.
@@ -1978,7 +2015,23 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                 endFlags.push_back(isScalar ? (flag & ~kPtrAndObjFlag) : flag);
               }
             };
-            appendEndFlags(copyin, kDeleteFlag);
+            for (Value data : copyin) {
+              Operation *entry = findDataEntryForMapping(kernelEnvOp, data);
+              bool isCopyout = false;
+              if (entry) {
+                Value accPtr = acc::getAccPtr(entry);
+                isCopyout = llvm::any_of(accPtr.getUses(), [](OpOperand &use) {
+                  return isa<acc::CopyoutOp>(use.getOwner());
+                });
+              }
+              uint64_t flag = isCopyout
+                                  ? (kHostCopyoutFlag | kPtrAndObjFlag)
+                                  : kDeleteFlag;
+              uint64_t scalarSize = 0;
+              bool isScalar = getScalarMappingSize(
+                  kernelEnvOp, data, moduleTranslation, scalarSize);
+              endFlags.push_back(isScalar ? (flag & ~kPtrAndObjFlag) : flag);
+            }
             appendEndFlags(deleteOperands, kDeleteFlag);
             appendEndFlags(copyout, kHostCopyoutFlag | kPtrAndObjFlag);
             for (Value data : create) {

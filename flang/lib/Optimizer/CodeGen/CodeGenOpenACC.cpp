@@ -386,6 +386,23 @@ struct AtomicWriteOpConversion
   }
 };
 
+struct AtomicCaptureOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::AtomicCaptureOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::AtomicCaptureOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(),
+                                           *this->typeConverter)))
+      return mlir::failure();
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
 // ---- CG ops from OpenACC compute lowering pipeline ----
 
 /// acc.privatize - creates private storage handle.
@@ -636,7 +653,8 @@ void fir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::DeclareDeviceResidentOp, mlir::acc::DeclareLinkOp,
       mlir::acc::InitOp, mlir::acc::ShutdownOp,
       mlir::acc::SetOp, mlir::acc::WaitOp, mlir::acc::AtomicReadOp,
-      mlir::acc::AtomicWriteOp, mlir::acc::AtomicUpdateOp>(
+      mlir::acc::AtomicWriteOp, mlir::acc::AtomicCaptureOp,
+      mlir::acc::AtomicUpdateOp>(
       [&](mlir::Operation *op) {
     return typeConverter.isLegal(op->getOperandTypes()) &&
            typeConverter.isLegal(op->getResultTypes()) &&
@@ -746,6 +764,7 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<WaitOpConversion>(converter);
   patterns.add<AtomicReadOpConversion>(converter);
   patterns.add<AtomicWriteOpConversion>(converter);
+  patterns.add<AtomicCaptureOpConversion>(converter);
   patterns.add<AtomicUpdateOpConversion>(converter);
   patterns.add<ParallelOpConversion>(converter);
   patterns.add<SerialOpConversion>(converter);
