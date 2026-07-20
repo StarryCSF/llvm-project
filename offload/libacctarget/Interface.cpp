@@ -1886,7 +1886,14 @@ EXTERN void *__tgt_acc_get_deviceptr(ident_t *Loc, void *BasePtr, int64_t Flags,
 
   void *DevicePtr = nullptr;
 
-  llvm::Expected<DeviceTy &> DeviceOrErr = DM->getDevice();
+  if (!DM)
+    return nullptr;
+
+  acc_device_t DeviceType = DM->getDeviceType();
+  if (DeviceType == acc_device_none || DM->getNumDevices(DeviceType) == 0)
+    return nullptr;
+
+  llvm::Expected<DeviceTy &> DeviceOrErr = DM->getDevice(DeviceType);
   if (!DeviceOrErr)
     REPORT_FATAL() << "Failed to get device: "
                    << toString(DeviceOrErr.takeError());

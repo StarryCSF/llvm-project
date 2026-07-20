@@ -20,7 +20,14 @@ int accIsPresent(void *Ptr) {
   FUNC_LOGGER();
   ODBG(ADT_Interface) << "Address " << Ptr;
 
-  auto DeviceOrErr = DM->getDevice();
+  if (!DM)
+    return 0;
+
+  acc_device_t DeviceType = DM->getDeviceType();
+  if (DeviceType == acc_device_none || DM->getNumDevices(DeviceType) == 0)
+    return 0;
+
+  auto DeviceOrErr = DM->getDevice(DeviceType);
   if (!DeviceOrErr)
     REPORT_FATAL() << toString(DeviceOrErr.takeError()).c_str();
 

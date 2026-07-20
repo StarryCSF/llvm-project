@@ -209,6 +209,18 @@ static llvm::Function *getAccGetDevicePtrFunction(llvm::Module &module,
           .getCallee());
 }
 
+/// Get or create acc_is_present used by host_data if_present.
+static llvm::Function *getAccIsPresentFunction(llvm::Module &module,
+                                                llvm::LLVMContext &ctx) {
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction("acc_is_present",
+                               llvm::FunctionType::get(i32Ty, {ptrTy}, false))
+          .getCallee());
+}
+
 //===----------------------------------------------------------------------===//
 // OpenACC Data Operation Call Helper
 //===----------------------------------------------------------------------===//
@@ -275,14 +287,46 @@ convertHostDataOp(acc::HostDataOp op, llvm::IRBuilderBase &builder,
 
   llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(
       ctx, "acc.end_host_data", builder.GetInsertBlock()->getParent());
+
+  llvm::Value *cond = nullptr;
   if (auto ifCond = op.getIfCond()) {
-    llvm::Value *cond = moduleTranslation.lookupValue(ifCond);
+    cond = moduleTranslation.lookupValue(ifCond);
     if (!cond) {
       op.emitError("could not find LLVM value for if condition");
       return failure();
     }
+  }
+
+  if (op.getIfPresent()) {
+    llvm::Module *module = moduleTranslation.getLLVMModule();
+    llvm::Value *allPresent = nullptr;
+    for (mlir::Value dataOperand : op.getDataClauseOperands()) {
+      auto useDeviceOp = dataOperand.getDefiningOp<acc::UseDeviceOp>();
+      if (!useDeviceOp) {
+        op.emitError("if_present requires use_device operands");
+        return failure();
+      }
+
+      llvm::Value *varPtr =
+          moduleTranslation.lookupValue(useDeviceOp.getVarPtr());
+      if (!varPtr) {
+        op.emitError("could not find LLVM value for use_device variable");
+        return failure();
+      }
+
+      llvm::Value *isPresent = builder.CreateICmpNE(
+          builder.CreateCall(getAccIsPresentFunction(*module, ctx), {varPtr}),
+          builder.getInt32(0));
+      allPresent = allPresent ? builder.CreateAnd(allPresent, isPresent)
+                              : isPresent;
+    }
+    if (allPresent)
+      cond = cond ? builder.CreateAnd(cond, allPresent) : allPresent;
+  }
+
+  if (cond)
     builder.CreateCondBr(cond, entryBlock, endBlock);
-  } else {
+  else {
     builder.CreateBr(entryBlock);
   }
 
