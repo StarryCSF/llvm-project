@@ -1214,7 +1214,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   unsigned index = 0;
 
   llvm::SmallVector<mlir::Value> copyin, copyout, create, present,
-      deleteOperands, noCreateOperands, attachOperands;
+      deleteOperands, noCreateOperands, attachOperands, deviceptrOperands;
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
     if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
             dataOp.getDefiningOp())) {
@@ -1227,6 +1227,10 @@ static LogicalResult convertDataOp(acc::DataOp &op,
           copyout.push_back(devicePtrOp.getVarPtr());
         }
       }
+      deviceptrOperands.push_back(devicePtrOp.getVarPtr());
+    } else if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::DevicePtrOp>(
+                   dataOp.getDefiningOp())) {
+      deviceptrOperands.push_back(devicePtrOp.getVarPtr());
     } else if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(
                    dataOp.getDefiningOp())) {
       // TODO copyin readonly currenlty handled as copyin. Update when extension
@@ -1251,7 +1255,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   auto nbTotalOperands = copyin.size() + copyout.size() + create.size() +
                          present.size() + deleteOperands.size() +
-                         noCreateOperands.size() + attachOperands.size();
+                         noCreateOperands.size() + attachOperands.size() +
+                         deviceptrOperands.size();
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
@@ -1292,6 +1297,12 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
                              nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags,
                              names, index, mapperAllocas)))
+    return failure();
+
+  // Deviceptr operands are already device addresses and must not be copied.
+  if (failed(processOperands(builder, moduleTranslation, op, deviceptrOperands,
+                             nbTotalOperands, kDevicePtrFlag | kPtrAndObjFlag,
+                             flags, names, index, mapperAllocas)))
     return failure();
 
   llvm::GlobalVariable *maptypes =
