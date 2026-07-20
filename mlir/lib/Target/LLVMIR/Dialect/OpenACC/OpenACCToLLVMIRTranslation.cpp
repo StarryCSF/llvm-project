@@ -1522,7 +1522,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       });
     }
     appendEndFlag(data, isCopyout ? (kHostCopyoutFlag | kPtrAndObjFlag)
-                                  : kDeleteFlag);
+                                  : (kDeleteFlag | kPtrAndObjFlag));
   }
   appendEndFlags(deleteOperands, kDeleteFlag);
   appendEndFlags(copyout, kHostCopyoutFlag | kPtrAndObjFlag);
@@ -2287,7 +2287,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               }
               uint64_t flag = isCopyout
                                   ? (kHostCopyoutFlag | kPtrAndObjFlag)
-                                  : kDeleteFlag;
+                                  : (kDeleteFlag | kPtrAndObjFlag);
               uint64_t scalarSize = 0;
               bool isScalar = getScalarMappingSize(
                   kernelEnvOp, data, moduleTranslation, scalarSize);
