@@ -4916,6 +4916,10 @@ public:
         [](mlir::acc::PrivateType type) -> mlir::Type {
           return mlir::LLVM::LLVMPointerType::get(type.getContext());
         });
+    // OpenACC bounds are metadata consumed by the LLVMIR translation. Keep
+    // the dialect type available to data-clause conversion and translation.
+    typeConverter.addConversion(
+        [](mlir::acc::DataBoundsType type) -> mlir::Type { return type; });
     mlir::RewritePatternSet pattern(context);
     fir::populateFIRToLLVMConversionPatterns(typeConverter, pattern, options);
     mlir::populateFuncToLLVMConversionPatterns(typeConverter, pattern);

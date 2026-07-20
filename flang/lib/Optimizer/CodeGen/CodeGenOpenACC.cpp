@@ -61,8 +61,34 @@ struct DataClauseOpConversion : public OpenACCFIROpConversion<OpType> {
     if (failed(converter->convertTypes(curOp->getResultTypes(), resTypes)))
       return mlir::failure();
 
-    rewriter.replaceOpWithNewOp<OpType>(
-        curOp, resTypes, adaptor.getOperands(), curOp->getAttrs());
+    auto newOp = rewriter.create<OpType>(curOp.getLoc(), resTypes,
+                                         adaptor.getOperands(),
+                                         curOp->getAttrs());
+    // Keep the original bounds values as OpenACC metadata. The LLVMIR
+    // translation uses their defining acc.bounds operations to form the
+    // pointer offset and mapped byte extent.
+    if (auto varType = curOp->template getAttrOfType<mlir::TypeAttr>(
+            "varType")) {
+      if (mlir::Type converted = converter->convertType(varType.getValue()))
+        newOp->setAttr("varType", mlir::TypeAttr::get(converted));
+    }
+    rewriter.replaceOp(curOp, newOp);
+    return mlir::success();
+  }
+};
+
+/// Convert the scalar operands of acc.bounds while retaining its OpenACC
+/// result type. Bounds are metadata consumed by the LLVMIR translation.
+struct DataBoundsOpConversion
+    : public OpenACCFIROpConversion<mlir::acc::DataBoundsOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::DataBoundsOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
     return mlir::success();
   }
 };
@@ -365,8 +391,13 @@ struct AtomicReadOpConversion
   llvm::LogicalResult
   matchAndRewrite(mlir::acc::AtomicReadOp curOp, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Type elementType = this->getTypeConverter()->convertType(
+        curOp.getElementType());
+    if (!elementType)
+      return mlir::failure();
     rewriter.modifyOpInPlace(curOp, [&]() {
       curOp->setOperands(adaptor.getOperands());
+      curOp.setElementTypeAttr(mlir::TypeAttr::get(elementType));
     });
     return mlir::success();
   }
@@ -378,6 +409,20 @@ struct AtomicWriteOpConversion
 
   llvm::LogicalResult
   matchAndRewrite(mlir::acc::AtomicWriteOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// Convert values yielded from OpenACC atomic update/capture regions.
+struct YieldOpConversion : public OpenACCFIROpConversion<mlir::acc::YieldOp> {
+  using OpenACCFIROpConversion::OpenACCFIROpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::YieldOp curOp, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     rewriter.modifyOpInPlace(curOp, [&]() {
       curOp->setOperands(adaptor.getOperands());
@@ -640,7 +685,8 @@ struct GPUSharedMemoryOpConversion
 void fir::configureOpenACCToLLVMConversionLegality(
     mlir::ConversionTarget &target, const LLVMTypeConverter &typeConverter) {
   // OpenACC data clause operations are legal when their operand and result
-  // types are LLVM types.
+  // types are LLVM types. acc.data_bounds_ty remains metadata until LLVMIR
+  // translation and is therefore explicitly legal here.
   target.addDynamicallyLegalOp<
       mlir::acc::CopyinOp, mlir::acc::CopyoutOp, mlir::acc::CreateOp,
       mlir::acc::DeleteOp, mlir::acc::PresentOp, mlir::acc::NoCreateOp,
@@ -662,6 +708,18 @@ void fir::configureOpenACCToLLVMConversionLegality(
            llvm::all_of(op->getRegions(), [&](mlir::Region &region) {
              return typeConverter.isLegal(&region);
            });
+  });
+
+  // Bounds remain OpenACC metadata. Their scalar operands are converted, but
+  // the data_bounds result is intentionally retained for LLVMIR translation.
+  target.addDynamicallyLegalOp<mlir::acc::DataBoundsOp,
+                               mlir::acc::GetLowerboundOp,
+                               mlir::acc::GetUpperboundOp,
+                               mlir::acc::GetStrideOp,
+                               mlir::acc::GetExtentOp>(
+      [&](mlir::Operation *op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes());
   });
 
   // OpenACC compute construct operations (parallel/serial/loop) are legal when
@@ -737,6 +795,7 @@ void fir::configureOpenACCToLLVMConversionLegality(
 
 void fir::populateOpenACCFIRToLLVMConversionPatterns(
     const LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
+  patterns.add<DataBoundsOpConversion>(converter);
   patterns.add<DataClauseOpConversion<mlir::acc::CopyinOp>>(converter);
   patterns.add<DataClauseOpConversion<mlir::acc::CopyoutOp>>(converter);
   patterns.add<DataClauseOpConversion<mlir::acc::CreateOp>>(converter);
@@ -765,6 +824,7 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<WaitOpConversion>(converter);
   patterns.add<AtomicReadOpConversion>(converter);
   patterns.add<AtomicWriteOpConversion>(converter);
+  patterns.add<YieldOpConversion>(converter);
   patterns.add<AtomicCaptureOpConversion>(converter);
   patterns.add<AtomicUpdateOpConversion>(converter);
   patterns.add<ParallelOpConversion>(converter);
