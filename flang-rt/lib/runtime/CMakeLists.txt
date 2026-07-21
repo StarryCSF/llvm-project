@@ -299,8 +299,6 @@ if (FLANG_RT_FORTRAN_MODULES)
   flang_module_target(flang-rt-mod PUBLIC)
   add_module_barrier(flang-rt-mod.barrier flang-rt-mod)
 
-  add_module_barrier(flang-rt-mod.barrier flang-rt-mod)
-
   if (RUNTIMES_FORTRAN_MODULES)
     set(_mod_install_dest "${RUNTIMES_INSTALL_RESOURCE_MOD_PATH}/..")
     cmake_path(NORMAL_PATH _mod_install_dest)

@@ -98,7 +98,7 @@ void DeviceManagerTy::refreshDeviceMapping(bool UpdateDeviceType) {
   for (DeviceTy &Device : PM->devices(ExclusiveDevicesAccessor)) {
     if (Device.RTL->getTripleArch() == llvm::Triple::nvptx64) {
       getSingleDeviceTypeMap(acc_device_nvidia).push_back(Device.DeviceID);
-    } else if (Device.RTL->getTripleArch() == llvm::Triple::amdgcn) {
+    } else if (Device.RTL->getTripleArch() == llvm::Triple::amdgpu) {
       getSingleDeviceTypeMap(acc_device_amd).push_back(Device.DeviceID);
     } else if (Device.RTL->getTripleArch() == llvm::Triple::spirv64) {
       getSingleDeviceTypeMap(acc_device_spirv).push_back(Device.DeviceID);

@@ -1,9 +1,10 @@
 ! RUN: %python %S/../test_errors.py %s %flang_fc1 -fopenacc
 
 subroutine test_sentinel()
-! Test for error since we currently do not have an OpenACC module upstream.
-!ERROR: Cannot parse module file for module 'openacc': Source file 'openacc.mod' was not found
+! Test that the !@acc sentinel can load the openacc module.
   !@acc use openacc
+!ERROR: Cannot parse module file for module 'non_existent_module': Source file 'non_existent_module.mod' was not found
+  !@acc use non_existent_module
   integer :: i
 
   !$acc parallel loop
