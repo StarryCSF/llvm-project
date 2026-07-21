@@ -31,7 +31,7 @@ void *acc_create(void *Ptr, size_t Bytes) {
                       acc_async_sync);
 }
 void acc_create_async(void *Ptr, size_t Bytes, int Async) {
-  accDataEnter(nullptr, Ptr, Bytes, TGT_ACC_MAPTYPE_NONE, acc_async_sync);
+  accDataEnter(nullptr, Ptr, Bytes, TGT_ACC_MAPTYPE_NONE, Async);
 }
 void *acc_pcreate(void *Ptr, size_t Bytes) { return acc_create(Ptr, Bytes); }
 void acc_pcreate_async(void *Ptr, size_t Bytes, int Async) {
@@ -77,7 +77,7 @@ void *acc_copyin(void *Ptr, size_t Bytes) {
   return accDataEnter(nullptr, Ptr, Bytes, TGT_ACC_MAPTYPE_TO, acc_async_sync);
 }
 void acc_copyin_async(void *Ptr, size_t Bytes, int Async) {
-  accDataEnter(nullptr, Ptr, Bytes, TGT_ACC_MAPTYPE_TO, acc_async_sync);
+  accDataEnter(nullptr, Ptr, Bytes, TGT_ACC_MAPTYPE_TO, Async);
 }
 void *acc_pcopyin(void *Ptr, size_t Bytes) { return acc_copyin(Ptr, Bytes); }
 void acc_pcopyin_async(void *Ptr, size_t Bytes, int Async) {

@@ -62,6 +62,10 @@
         integer (acc_device_property_kind), parameter, public :: acc_property_driver = 1002
         integer (acc_device_property_kind), parameter, public :: acc_property_string_end = 1003
 
+        integer (acc_handle_kind), parameter, public :: acc_async_sync = -1
+        integer (acc_handle_kind), parameter, public :: acc_async_default = -3
+        integer (acc_handle_kind), parameter, public :: acc_async_noval = -4
+
         interface
 
 !         ***
@@ -78,7 +82,7 @@
 
           function acc_is_present_a(data_arg) bind(c, name="_cfi_acc_is_present_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             logical acc_is_present_a
           end function acc_is_present_a
 
@@ -91,7 +95,7 @@
 
           subroutine acc_create_a(data_arg) bind(c, name="_cfi_acc_create_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_create_a
 
           subroutine acc_pcreate(data_arg, bytes) bind(c, name="acc_pcreate")
@@ -103,7 +107,7 @@
 
           subroutine acc_pcreate_a(data_arg) bind(c, name="_cfi_acc_pcreate_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_pcreate_a
 
           subroutine acc_present_or_create(data_arg, bytes) bind(c, name="acc_present_or_create")
@@ -115,7 +119,7 @@
 
           subroutine acc_present_or_create_a(data_arg) bind(c, name="_cfi_acc_present_or_create_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_present_or_create_a
 
           subroutine acc_delete(data_arg, bytes) bind(c, name="acc_delete")
@@ -127,7 +131,7 @@
 
           subroutine acc_delete_a(data_arg) bind(c, name="_cfi_acc_delete_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_delete_a
 
           subroutine acc_delete_finalize(data_arg, bytes) bind(c, name="acc_delete_finalize")
@@ -139,7 +143,7 @@
 
           subroutine acc_delete_finalize_a(data_arg) bind(c, name="_cfi_acc_delete_finalize_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_delete_finalize_a
 
           subroutine acc_copyin(data_arg, bytes) bind(c, name="acc_copyin")
@@ -151,7 +155,7 @@
 
           subroutine acc_copyin_a(data_arg) bind(c, name="_cfi_acc_copyin_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_copyin_a
 
           subroutine acc_pcopyin(data_arg, bytes) bind(c, name="acc_pcopyin")
@@ -163,7 +167,7 @@
 
           subroutine acc_pcopyin_a(data_arg) bind(c, name="_cfi_acc_pcopyin_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_pcopyin_a
 
           subroutine acc_present_or_copyin(data_arg, bytes) bind(c, name="acc_present_or_copyin")
@@ -175,7 +179,7 @@
 
           subroutine acc_present_or_copyin_a(data_arg) bind(c, name="_cfi_acc_present_or_copyin_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_present_or_copyin_a
 
           subroutine acc_copyout(data_arg, bytes) bind(c, name="acc_copyout")
@@ -187,7 +191,7 @@
 
           subroutine acc_copyout_a(data_arg) bind(c, name="_cfi_acc_copyout_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_copyout_a
 
           subroutine acc_copyout_finalize(data_arg, bytes) bind(c, name="acc_copyout_finalize")
@@ -199,7 +203,7 @@
 
           subroutine acc_copyout_finalize_a(data_arg) bind(c, name="_cfi_acc_copyout_finalize_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_copyout_finalize_a
 
           subroutine acc_update_device(data_arg, bytes) bind(c, name="acc_update_device")
@@ -211,7 +215,7 @@
 
           subroutine acc_update_device_a(data_arg) bind(c, name="_cfi_acc_update_device_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_update_device_a
 
           subroutine acc_updatein(data_arg, bytes) bind(c, name="acc_updatein")
@@ -223,7 +227,7 @@
 
           subroutine acc_updatein_a(data_arg) bind(c, name="_cfi_acc_updatein_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_updatein_a
 
           subroutine acc_update_self(data_arg, bytes) bind(c, name="acc_update_self")
@@ -235,7 +239,7 @@
 
           subroutine acc_update_self_a(data_arg) bind(c, name="_cfi_acc_update_self_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_update_self_a
 
           subroutine acc_update_host(data_arg, bytes) bind(c, name="acc_update_host")
@@ -247,7 +251,7 @@
 
           subroutine acc_update_host_a(data_arg) bind(c, name="_cfi_acc_update_host_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_update_host_a
 
           subroutine acc_updateout(data_arg, bytes) bind(c, name="acc_updateout")
@@ -259,7 +263,7 @@
 
           subroutine acc_updateout_a(data_arg) bind(c, name="_cfi_acc_updateout_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
           end subroutine acc_updateout_a
 
 !         ***
@@ -276,7 +280,7 @@
 
           subroutine acc_create_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_create_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_create_async_a
 
@@ -293,7 +297,7 @@
 
           subroutine acc_delete_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_delete_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_delete_async_a
 
@@ -307,7 +311,7 @@
 
           subroutine acc_delete_finalize_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_delete_finalize_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_delete_finalize_async_a
 
@@ -321,7 +325,7 @@
 
           subroutine acc_copyin_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_copyin_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_copyin_async_a
 
@@ -338,7 +342,7 @@
 
           subroutine acc_copyout_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_copyout_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_copyout_async_a
 
@@ -352,7 +356,7 @@
 
           subroutine acc_copyout_finalize_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_copyout_finalize_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_copyout_finalize_async_a
 
@@ -366,7 +370,7 @@
 
           subroutine acc_update_device_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_update_device_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_update_device_async_a
 
@@ -382,7 +386,7 @@
 
           subroutine acc_update_self_async_a(data_arg, async_arg) bind(c, name="_cfi_acc_update_self_async_a")
             use openacc_kinds
-            type (*), dimension (*) :: data_arg
+            type (*), dimension (..) :: data_arg
             integer(acc_handle_kind), value :: async_arg
           end subroutine acc_update_self_async_a
 
@@ -728,12 +732,12 @@
 
           subroutine acc_set_default_async(async_arg) bind(c)
             use openacc_kinds
-            integer (acc_handle_kind) :: async_arg
+            integer (acc_handle_kind), value :: async_arg
           end subroutine acc_set_default_async
 
           subroutine acc_set_default_async_(async_arg) bind(c)
             use openacc_kinds
-            integer (acc_handle_kind) :: async_arg
+            integer (acc_handle_kind), value :: async_arg
           end subroutine acc_set_default_async_
 
           function acc_get_default_async() bind(c)
