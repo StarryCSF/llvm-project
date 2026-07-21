@@ -1055,9 +1055,25 @@ struct ArgDescriptorsTy {
         ParentAllocation = DescriptorAddr;
       }
 
-      handleSingleDataEnd<int64_t>(
-          Loc, DescriptorAddr, DescriptorAddr, DescInfo.DescriptorSize,
-          ForceDelete, IsNoCreate, CopyType, MapType, AsyncInfo, Device);
+      bool descPresent = [&]() {
+        auto DescTPR = Device.getMappingInfo().getTgtPtrBegin(
+            DescriptorAddr, DescInfo.DescriptorSize,
+            /*UpdateRefCount=*/false,
+            /*UseHoldRefCount=*/MapType == AccRefCountingType::Structured,
+            /*MustContain=*/false,
+            /*ForceDelete=*/false,
+            /*FromDataEnd=*/false);
+        return DescTPR.isPresent();
+      }();
+      if (descPresent) {
+        handleSingleDataEnd<int64_t>(Loc, DescriptorAddr, DescriptorAddr,
+                                     DescInfo.DescriptorSize, ForceDelete,
+                                     IsNoCreate, CopyType, MapType, AsyncInfo, Device);
+      }
+
+      // handleSingleDataEnd<int64_t>(
+      //     Loc, DescriptorAddr, DescriptorAddr, DescInfo.DescriptorSize,
+      //     ForceDelete, IsNoCreate, CopyType, MapType, AsyncInfo, Device);
 
       if (MapInfo.Memory) {
         auto &MemInfo = *MapInfo.Memory;
@@ -1929,6 +1945,12 @@ EXTERN void __tgt_acc_set_device_num(ident_t *Loc, int64_t Flags,
   // accelerator types.
   if (DeviceType == 0) {
     DM->setAllDeviceId(DeviceNum);
+    return;
+  }
+
+  int num_device = DM->getNumDevices(static_cast<acc_device_t>(DeviceType));
+  if (DeviceNum >= num_device) {
+    REPORT_FATAL() << "device out of range.";
     return;
   }
 
