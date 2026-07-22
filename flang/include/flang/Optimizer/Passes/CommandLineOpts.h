@@ -61,6 +61,7 @@ extern llvm::cl::opt<bool> useOldAliasTags;
 /// CodeGen Passes
 extern llvm::cl::opt<bool> disableCodeGenRewrite;
 extern llvm::cl::opt<bool> disableTargetRewrite;
+extern llvm::cl::opt<bool> disableRecipe;
 extern llvm::cl::opt<bool> disableDebugInfo;
 extern llvm::cl::opt<bool> disableFirToLlvmIr;
 extern llvm::cl::opt<bool> disableLlvmIrToLlvm;

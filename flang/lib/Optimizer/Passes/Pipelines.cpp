@@ -15,6 +15,7 @@
 #include "flang/Optimizer/OpenACC/Passes.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
+#include "mlir/Dialect/OpenACC/Transforms/Passes.h"
 #include "mlir/Dialect/OpenMP/Transforms/Passes.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -460,6 +461,13 @@ void createDefaultFIRCodeGenPassPipeline(mlir::PassManager &pm,
         flangomp::createLowerNontemporalPass());
   }
 
+  // Materialize OpenACC private, firstprivate and reduction recipes before
+  // FIR-to-LLVM conversion, which expects no recipe ops to remain.
+  if (!disableRecipe) {
+    pm.addPass(fir::acc::createACCRecipeBufferizationPass());
+    pm.addPass(mlir::acc::createACCRecipeMaterialization());
+  }
+
   fir::addFIRToLLVMPass(pm, config);
   pm.addPass(fir::createEmitMIFGlobalCtors());
 
@@ -529,6 +537,7 @@ void registerFlangPipelinePasses() {
   hlfir::registerHLFIRPasses();
   flangomp::registerFlangOpenMPPasses();
   fir::acc::registerFIROpenACCPasses();
+  mlir::acc::registerACCRecipeMaterialization();
 }
 
 } // namespace fir
