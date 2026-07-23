@@ -242,6 +242,30 @@ void PluginManager::initializeAllDevices() {
   }
 }
 
+
+int32_t PluginManager::deinitDevice(uint32_t UserId) {
+  auto ExclusiveDevicesAccessor = getExclusiveDevicesAccessor();
+  auto &Devices = *ExclusiveDevicesAccessor;
+  if (UserId >= Devices.size() || !Devices[UserId])
+    return OFFLOAD_FAIL;
+
+  DeviceTy &Device = *Devices[UserId];
+  GenericPluginTy *Plugin = Device.RTL;
+  int32_t RTLDevId = Device.RTLDeviceID;
+
+  if (auto Err = Plugin->deinitDevice(RTLDevId))
+    return OFFLOAD_FAIL;
+
+  Devices.erase(Devices.begin() + static_cast<ptrdiff_t>(UserId));
+
+  for (auto &Entry : DeviceIds) {
+    if (Entry.second > static_cast<int32_t>(UserId))
+      --Entry.second;
+  }
+
+  return OFFLOAD_SUCCESS;
+}
+
 // Returns a pointer to the binary descriptor, upgrading from a legacy format if
 // necessary.
 __tgt_bin_desc *PluginManager::upgradeLegacyEntries(__tgt_bin_desc *Desc) {

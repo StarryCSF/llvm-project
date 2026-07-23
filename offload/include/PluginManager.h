@@ -151,6 +151,11 @@ struct PluginManager {
     return count;
   }
 
+  /// De-initialise a single device by its PM-level user ID.
+  /// Removes the device from the internal device list and updates all
+  /// dependent mappings.  Returns OFFLOAD_SUCCESS on success.
+  int32_t deinitDevice(uint32_t PMDeviceId);
+
 private:
   bool RTLsLoaded = false;
   llvm::SmallVector<

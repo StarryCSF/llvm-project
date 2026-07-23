@@ -2043,19 +2043,155 @@ static void accRuntimeAutoDeinit() {
 }
 } // namespace
 
+
+static acc_device_t archToDeviceType(llvm::Triple::ArchType Arch) {
+  switch (Arch) {
+  case llvm::Triple::nvptx64:
+    return acc_device_nvidia;
+  case llvm::Triple::amdgpu:
+    return acc_device_amd;
+  case llvm::Triple::spirv64:
+    return acc_device_spirv;
+  default:
+    return acc_device_none; // treat as unavailable
+  }
+}
+
+static bool isDeviceTypeAvailable(acc_device_t DevType) {
+  if (DevType == acc_device_host)
+    return true;
+  for (auto &Plugin : PM->plugins()) {
+    if (!(Plugin.is_initialized() && Plugin.getNumDevices() > 0))
+      continue;
+    if (archToDeviceType(Plugin.getTripleArch()) == DevType)
+      return true;
+  }
+  return false;
+}
+
+static acc_device_t resolveDeviceType(int64_t DeviceType) {
+  if (DeviceType >= acc_device_concrete_type_begin &&
+      DeviceType < acc_device_concrete_type_end)
+    return static_cast<acc_device_t>(DeviceType);
+
+  switch (static_cast<acc_device_t>(DeviceType)) {
+  case acc_device_default: {
+    acc_device_t T = DM->getDeviceType();
+    if (T != acc_device_none)
+      return T;
+    REPORT_FATAL() << ": no device type available.";
+  }
+  case acc_device_none:
+    REPORT_FATAL() << ": invalid device type acc_device_none.";
+  case acc_device_host:
+    return acc_device_host;
+  case acc_device_not_host:
+    return acc_device_not_host;
+  default:
+    REPORT_FATAL() << "acc_init: unrecognized device type (" << DeviceType
+                   << ").";
+  }
+}
+
+static void initDevicesOfType(acc_device_t DevType, int64_t DeviceNum) {
+  for (auto &Plugin : PM->plugins()) {
+    if (!(Plugin.is_initialized() && Plugin.getNumDevices() > 0))
+      continue;
+    if (archToDeviceType(Plugin.getTripleArch()) != DevType)
+      continue;
+
+    int32_t NumDev = Plugin.getNumDevices();
+    if (DeviceNum >= 0) {
+      if (DeviceNum < NumDev)
+        PM->initializeDevice(Plugin, static_cast<int32_t>(DeviceNum));
+    } else {
+      for (int32_t I = 0; I < NumDev; ++I)
+        PM->initializeDevice(Plugin, I);
+    }
+  }
+}
+
 EXTERN void __tgt_acc_init(ident_t *Loc, int64_t Flags, int64_t DeviceType,
                            int64_t DeviceNum) {
   std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
   FUNC_LOGGER(Loc);
-  REPORT_WARN() << "acc init is ignored";
+
+  acc_device_t ResolvedType = resolveDeviceType(DeviceType);
+
+  if (ResolvedType != acc_device_host &&
+      ResolvedType != acc_device_not_host &&
+      !isDeviceTypeAvailable(ResolvedType))
+    REPORT_FATAL() << "acc_init: device type ("
+                   << static_cast<int>(ResolvedType)
+                   << ") is not available on this system.";
+
+  __tgt_acc_set_device_type(Loc, Flags, ResolvedType);
+  if (DeviceNum >= 0)
+    __tgt_acc_set_device_num(Loc, Flags, ResolvedType, DeviceNum);
+
+  if (ResolvedType == acc_device_not_host) {
+    static const acc_device_t NonHosts[] = {
+        acc_device_nvidia, acc_device_amd, acc_device_spirv};
+    for (acc_device_t T : NonHosts)
+      if (isDeviceTypeAvailable(T))
+        initDevicesOfType(T, DeviceNum);
+  } else if (ResolvedType != acc_device_host) {
+    initDevicesOfType(ResolvedType, DeviceNum);
+  }
+  DM->refreshDeviceMapping(/*UpdateDeviceType=*/true);
 }
 
 EXTERN void __tgt_acc_shutdown(ident_t *Loc, int64_t Flags, int64_t DeviceType,
                                int64_t DeviceNum) {
   std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
   FUNC_LOGGER(Loc);
-  REPORT_WARN() << "acc shutdown is ignored.";
+
+  acc_device_t ResolvedType = resolveDeviceType(DeviceType);
+
+  if (ResolvedType != acc_device_host &&
+      ResolvedType != acc_device_not_host &&
+      !isDeviceTypeAvailable(ResolvedType))
+    REPORT_FATAL() << "acc_shutdown: device type ("
+                   << static_cast<int>(ResolvedType)
+                   << ") is not available on this system.";
+
+  struct TypeAndDevice {
+    acc_device_t Type;
+    int32_t PMDeviceId;
+  };
+  SmallVector<TypeAndDevice, 16> ShutdownList;
+
+  auto collectType = [&](acc_device_t T) {
+    auto &DevMap = DM->getSingleDeviceTypeMap(T);
+    for (size_t I = 0; I < DevMap.size(); ++I) {
+      if (DeviceNum >= 0 && static_cast<int32_t>(I) != DeviceNum)
+        continue;
+      ShutdownList.push_back({T, static_cast<int32_t>(DevMap[I])});
+    }
+  };
+
+  if (ResolvedType == acc_device_not_host) {
+    static const acc_device_t NonHosts[] = {
+        acc_device_nvidia, acc_device_amd, acc_device_spirv};
+    for (acc_device_t T : NonHosts)
+      collectType(T);
+  } else if (ResolvedType != acc_device_host) {
+    collectType(ResolvedType);
+  }
+
+  llvm::sort(ShutdownList, [](const TypeAndDevice &A, const TypeAndDevice &B) {
+    return A.PMDeviceId > B.PMDeviceId;
+  });
+
+  llvm::SmallDenseSet<int32_t, 8> SeenPMDeviceIds;
+  for (auto &Entry : ShutdownList) {
+    if (!SeenPMDeviceIds.insert(Entry.PMDeviceId).second)
+      continue; // already shut down
+    PM->deinitDevice(Entry.PMDeviceId);
+  }
+  DM->refreshDeviceMapping(/*UpdateDeviceType=*/true);
 }
+
 
 EXTERN void __tgt_acc_register_lib(__tgt_bin_desc *Desc) {
   std::scoped_lock<decltype(InitMutex)> Lock(InitMutex);
