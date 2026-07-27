@@ -28,6 +28,90 @@ using namespace mlir;
 using OpenACCIRBuilder = llvm::OpenMPIRBuilder;
 
 //===----------------------------------------------------------------------===//
+// OpenACC Runtime Function Declarations
+//===----------------------------------------------------------------------===//
+
+/// Get or create __tgt_acc_init function declaration.
+static llvm::Function *getAccInitFunction(llvm::Module &module,
+                                           llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_init",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_shutdown function declaration.
+static llvm::Function *getAccShutdownFunction(llvm::Module &module,
+                                               llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_shutdown",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_set_device_num function declaration.
+static llvm::Function *getAccSetDeviceNumFunction(llvm::Module &module,
+                                                    llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_set_device_num",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_set_device_type function declaration.
+static llvm::Function *getAccSetDeviceTypeFunction(llvm::Module &module,
+                                                    llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_set_device_type",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_set_default_async function declaration.
+static llvm::Function *getAccSetDefaultAsyncFunction(llvm::Module &module,
+                                                      llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_set_default_async",
+          llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+              {identTy, i64Ty}, false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_wait function declaration.
+static llvm::Function *getAccWaitFunction(llvm::Module &module,
+                                           llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module.getOrInsertFunction(
+          "__tgt_acc_wait",
+          llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx),
+              {identTy, i64Ty, i64Ty, i32Ty, i32Ty, ptrTy, i64Ty}, false))
+          .getCallee());
+}
+
+//===----------------------------------------------------------------------===//
 // Utility functions
 //===----------------------------------------------------------------------===//
 
@@ -469,6 +553,311 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// Conversion functions for init/shutdown/set/wait
+//===----------------------------------------------------------------------===//
+
+/// Converts acc.init operation into LLVM IR.
+static LogicalResult convertInitOp(acc::InitOp op,
+                                    llvm::IRBuilderBase &builder,
+                                    LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+  auto *fn = getAccInitFunction(*module, ctx);
+
+  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
+  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
+    switch (mlirType) {
+    case 0: return 0;  // None -> none
+    case 1: return 0;  // Star -> none
+    case 2: return 1;  // Default -> default
+    case 3: return 2;  // Host -> host
+    case 4: return 3;  // Multicore -> not_host
+    case 5: return 4;  // Nvidia -> nvidia
+    case 6: return 5;  // Radeon -> amd
+    default: return 1; // Unknown -> default
+    }
+  };
+
+  int64_t deviceType = 1; // default
+  if (op.getDeviceTypes()) {
+    auto dtypes = op.getDeviceTypes()->getValue();
+    if (!dtypes.empty()) {
+      int64_t mlirType = static_cast<int64_t>(
+          mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue());
+      deviceType = mapDeviceType(mlirType);
+    }
+  }
+
+  llvm::Value *deviceNumVal = builder.getInt64(-1);
+  if (op.getDeviceNum()) {
+    deviceNumVal = moduleTranslation.lookupValue(op.getDeviceNum());
+    if (deviceNumVal->getType() != llvm::Type::getInt64Ty(ctx))
+      deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
+  }
+
+  // Handle if(condition)
+  if (op.getIfCond()) {
+    llvm::Value *cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+    llvm::Function *func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock *thenBlock = llvm::BasicBlock::Create(ctx, "acc.init.then", func);
+    llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(ctx, "acc.init.end", func);
+    builder.CreateCondBr(cond, thenBlock, endBlock);
+    builder.SetInsertPoint(thenBlock);
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                            builder.getInt64(deviceType), deviceNumVal});
+    builder.CreateBr(endBlock);
+    builder.SetInsertPoint(endBlock);
+  } else {
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                            builder.getInt64(deviceType), deviceNumVal});
+  }
+  return success();
+}
+
+/// Converts acc.shutdown operation into LLVM IR.
+static LogicalResult convertShutdownOp(acc::ShutdownOp op,
+                                        llvm::IRBuilderBase &builder,
+                                        LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+  auto *fn = getAccShutdownFunction(*module, ctx);
+
+  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
+  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
+    switch (mlirType) {
+    case 0: return 0;  // None -> none
+    case 1: return 0;  // Star -> none
+    case 2: return 1;  // Default -> default
+    case 3: return 2;  // Host -> host
+    case 4: return 3;  // Multicore -> not_host
+    case 5: return 4;  // Nvidia -> nvidia
+    case 6: return 5;  // Radeon -> amd
+    default: return 1; // Unknown -> default
+    }
+  };
+
+  int64_t deviceType = 1; // default
+  if (op.getDeviceTypes()) {
+    auto dtypes = op.getDeviceTypes()->getValue();
+    if (!dtypes.empty()) {
+      int64_t mlirType = static_cast<int64_t>(
+          mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue());
+      deviceType = mapDeviceType(mlirType);
+    }
+  }
+
+  llvm::Value *deviceNumVal = builder.getInt64(-1);
+  if (op.getDeviceNum()) {
+    deviceNumVal = moduleTranslation.lookupValue(op.getDeviceNum());
+    if (deviceNumVal->getType() != llvm::Type::getInt64Ty(ctx))
+      deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
+  }
+
+  // Handle if(condition)
+  if (op.getIfCond()) {
+    llvm::Value *cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+    llvm::Function *func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock *thenBlock = llvm::BasicBlock::Create(ctx, "acc.shutdown.then", func);
+    llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(ctx, "acc.shutdown.end", func);
+    builder.CreateCondBr(cond, thenBlock, endBlock);
+    builder.SetInsertPoint(thenBlock);
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                            builder.getInt64(deviceType), deviceNumVal});
+    builder.CreateBr(endBlock);
+    builder.SetInsertPoint(endBlock);
+  } else {
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                            builder.getInt64(deviceType), deviceNumVal});
+  }
+  return success();
+}
+
+/// Converts acc.set operation into LLVM IR.
+static LogicalResult convertSetOp(acc::SetOp op,
+                                   llvm::IRBuilderBase &builder,
+                                   LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+
+  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
+  // MLIR: None=0, Star=1, Default=2, Host=3, Multicore=4, Nvidia=5, Radeon=6
+  // Runtime: none=0, default=1, host=2, not_host=3, nvidia=4, amd=5, spirv=6
+  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
+    switch (mlirType) {
+    case 0: return 0;  // None -> none
+    case 1: return 0;  // Star -> none (not used)
+    case 2: return 1;  // Default -> default
+    case 3: return 2;  // Host -> host
+    case 4: return 3;  // Multicore -> not_host
+    case 5: return 4;  // Nvidia -> nvidia
+    case 6: return 5;  // Radeon -> amd
+    default: return 1; // Unknown -> default
+    }
+  };
+
+  // Handle if(condition)
+  llvm::Value *cond = nullptr;
+  if (op.getIfCond()) {
+    cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+  }
+
+  // Create basic blocks for conditional execution
+  llvm::Function *func = builder.GetInsertBlock()->getParent();
+  llvm::BasicBlock *thenBlock = cond ? llvm::BasicBlock::Create(ctx, "acc.set.then", func) : nullptr;
+  llvm::BasicBlock *endBlock = cond ? llvm::BasicBlock::Create(ctx, "acc.set.end", func) : nullptr;
+
+  if (cond) {
+    builder.CreateCondBr(cond, thenBlock, endBlock);
+    builder.SetInsertPoint(thenBlock);
+  }
+
+  if (op.getDefaultAsync()) {
+    auto *fn = getAccSetDefaultAsyncFunction(*module, ctx);
+    llvm::Value *asyncVal = moduleTranslation.lookupValue(op.getDefaultAsync());
+    if (asyncVal->getType() != llvm::Type::getInt64Ty(ctx))
+      asyncVal = builder.CreateZExt(asyncVal, llvm::Type::getInt64Ty(ctx));
+    builder.CreateCall(fn, {srcLocInfo, asyncVal});
+  }
+
+  if (op.getDeviceNum()) {
+    auto *fn = getAccSetDeviceNumFunction(*module, ctx);
+    llvm::Value *deviceNumVal = moduleTranslation.lookupValue(op.getDeviceNum());
+    if (deviceNumVal->getType() != llvm::Type::getInt64Ty(ctx))
+      deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
+    int64_t deviceType = 1; // default
+    if (op.getDeviceType())
+      deviceType = mapDeviceType(static_cast<int64_t>(*op.getDeviceType()));
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                           builder.getInt64(deviceType), deviceNumVal});
+  } else if (op.getDeviceType()) {
+    auto *fn = getAccSetDeviceTypeFunction(*module, ctx);
+    int64_t rtDeviceType = mapDeviceType(static_cast<int64_t>(*op.getDeviceType()));
+    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                           builder.getInt64(rtDeviceType)});
+  }
+
+  if (cond) {
+    builder.CreateBr(endBlock);
+    builder.SetInsertPoint(endBlock);
+  }
+
+  return success();
+}
+
+/// Converts acc.wait operation into LLVM IR.
+static LogicalResult convertWaitOp(acc::WaitOp op,
+                                    llvm::IRBuilderBase &builder,
+                                    LLVM::ModuleTranslation &moduleTranslation) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+  auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
+  auto *fn = getAccWaitFunction(*module, ctx);
+
+  // Handle if(condition)
+  llvm::Value *cond = nullptr;
+  if (op.getIfCond()) {
+    cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+  }
+
+  llvm::Value *deviceNum = builder.getInt32(-1);
+  if (op.getWaitDevnum()) {
+    deviceNum = moduleTranslation.lookupValue(op.getWaitDevnum());
+    if (!deviceNum) {
+      op.emitError("could not find LLVM value for wait device number");
+      return failure();
+    }
+    if (deviceNum->getType() != llvm::Type::getInt32Ty(ctx))
+      deviceNum = builder.CreateIntCast(deviceNum,
+                                        llvm::Type::getInt32Ty(ctx), true);
+  }
+
+  unsigned waitNum = op.getWaitOperands().size();
+  llvm::Value *waitListPtr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+  if (waitNum) {
+    auto *arrTy = llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), waitNum);
+    auto *waitList = builder.CreateAlloca(arrTy);
+    for (auto [index, waitValue] : llvm::enumerate(op.getWaitOperands())) {
+      llvm::Value *wait = moduleTranslation.lookupValue(waitValue);
+      if (!wait) {
+        op.emitError("could not find LLVM value for wait operand");
+        return failure();
+      }
+      if (wait->getType() != llvm::Type::getInt64Ty(ctx))
+        wait = builder.CreateIntCast(wait, llvm::Type::getInt64Ty(ctx), true);
+      auto *gep = builder.CreateInBoundsGEP(
+          arrTy, waitList, {builder.getInt32(0), builder.getInt32(index)});
+      builder.CreateStore(wait, gep);
+    }
+    waitListPtr = waitList;
+  }
+
+  llvm::Value *async = builder.getInt64(-1);
+  bool asyncOnly = false;
+  if (op.getAsync()) {
+    asyncOnly = true;
+  }
+  if (op.getAsyncOperand()) {
+    async = moduleTranslation.lookupValue(op.getAsyncOperand());
+    if (!async) {
+      op.emitError("could not find LLVM value for async operand");
+      return failure();
+    }
+    if (async->getType() != llvm::Type::getInt64Ty(ctx))
+      async = builder.CreateIntCast(async, llvm::Type::getInt64Ty(ctx), true);
+  } else if (asyncOnly) {
+    async = builder.getInt64(-2);
+  }
+
+  // Create basic blocks for conditional execution
+  llvm::Function *func = builder.GetInsertBlock()->getParent();
+  llvm::BasicBlock *thenBlock = cond ? llvm::BasicBlock::Create(ctx, "acc.wait.then", func) : nullptr;
+  llvm::BasicBlock *endBlock = cond ? llvm::BasicBlock::Create(ctx, "acc.wait.end", func) : nullptr;
+
+  if (cond) {
+    builder.CreateCondBr(cond, thenBlock, endBlock);
+    builder.SetInsertPoint(thenBlock);
+  }
+
+  builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
+                          builder.getInt64(0), deviceNum,
+                          builder.getInt32(waitNum), waitListPtr, async});
+
+  if (cond) {
+    builder.CreateBr(endBlock);
+    builder.SetInsertPoint(endBlock);
+  }
+
+  return success();
+}
+
 namespace {
 
 /// Implementation of the dialect interface that converts operations belonging
@@ -508,6 +897,18 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       .Case([&](acc::UpdateOp updateOp) {
         return convertStandaloneDataOp<acc::UpdateOp>(updateOp, builder,
                                                       moduleTranslation);
+      })
+      .Case([&](acc::InitOp initOp) {
+        return convertInitOp(initOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::ShutdownOp shutdownOp) {
+        return convertShutdownOp(shutdownOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::SetOp setOp) {
+        return convertSetOp(setOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::WaitOp waitOp) {
+        return convertWaitOp(waitOp, builder, moduleTranslation);
       })
       .Case<acc::TerminatorOp, acc::YieldOp>([](auto op) {
         // `yield` and `terminator` can be just omitted. The block structure was

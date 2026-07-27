@@ -176,8 +176,19 @@ void DeviceManagerTy::checkICVs() {
   // }
   ODBG() << "acc-current-device-type = " << icv::AccCurrentDeviceTypeVar;
   assert(icv::AccCurrentDeviceTypeVar == acc_device_default ||
+         icv::AccCurrentDeviceTypeVar == acc_device_host ||
+         icv::AccCurrentDeviceTypeVar == acc_device_not_host ||
          (icv::AccCurrentDeviceTypeVar >= acc_device_concrete_type_begin &&
           icv::AccCurrentDeviceTypeVar < acc_device_concrete_type_end));
+  
+  // Also check AccCurrentDefaultDeviceTypeVar if current is default
+  if (icv::AccCurrentDeviceTypeVar == acc_device_default) {
+    assert(icv::AccCurrentDefaultDeviceTypeVar == acc_device_none ||
+           icv::AccCurrentDefaultDeviceTypeVar == acc_device_host ||
+           icv::AccCurrentDefaultDeviceTypeVar == acc_device_not_host ||
+           (icv::AccCurrentDefaultDeviceTypeVar >= acc_device_concrete_type_begin &&
+            icv::AccCurrentDefaultDeviceTypeVar < acc_device_concrete_type_end));
+  }
   acc_device_t DeviceType = icv::AccCurrentDeviceTypeVar;
   if (DeviceType == acc_device_default) {
     DeviceType = icv::AccCurrentDefaultDeviceTypeVar;

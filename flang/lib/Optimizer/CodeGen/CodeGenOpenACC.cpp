@@ -38,7 +38,9 @@ void mlir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::DataOp, mlir::acc::EnterDataOp, mlir::acc::ExitDataOp,
       mlir::acc::UpdateOp, mlir::acc::TerminatorOp, mlir::acc::CreateOp,
       mlir::acc::CopyinOp, mlir::acc::CopyoutOp, mlir::acc::DeleteOp,
-      mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp>(
+      mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp,
+      mlir::acc::InitOp, mlir::acc::ShutdownOp,
+      mlir::acc::SetOp, mlir::acc::WaitOp>(
       [&](mlir::Operation *op) {
         return typeConverter.isLegal(op->getOperandTypes()) &&
                typeConverter.isLegal(op->getResultTypes()) &&
@@ -157,6 +159,66 @@ addOpenACCOpConversions(LLVMTypeConverter &converter,
   return patterns.add<OpenACCOpConversion<Ts>...>(converter);
 }
 
+//===----------------------------------------------------------------------===//
+// Device management operation conversions (init/shutdown/set/wait)
+//===----------------------------------------------------------------------===//
+
+/// Conversion pattern for acc.init operation.
+struct InitOpConversion : public FIROpenACCOpConversion<mlir::acc::InitOp> {
+  using FIROpenACCOpConversion::FIROpenACCOpConversion;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::acc::InitOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// Conversion pattern for acc.shutdown operation.
+struct ShutdownOpConversion : public FIROpenACCOpConversion<mlir::acc::ShutdownOp> {
+  using FIROpenACCOpConversion::FIROpenACCOpConversion;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::acc::ShutdownOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// Conversion pattern for acc.set operation.
+struct SetOpConversion : public FIROpenACCOpConversion<mlir::acc::SetOp> {
+  using FIROpenACCOpConversion::FIROpenACCOpConversion;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::acc::SetOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
+/// Conversion pattern for acc.wait operation.
+struct WaitOpConversion : public FIROpenACCOpConversion<mlir::acc::WaitOp> {
+  using FIROpenACCOpConversion::FIROpenACCOpConversion;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::acc::WaitOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(curOp, [&]() {
+      curOp->setOperands(adaptor.getOperands());
+    });
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -182,4 +244,9 @@ void mlir::populateOpenACCToLLVMConversionPatterns(
 }
 
 void fir::populateOpenACCFIRToLLVMConversionPatterns(
-    const LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {}
+    const LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
+  patterns.add<InitOpConversion>(converter);
+  patterns.add<ShutdownOpConversion>(converter);
+  patterns.add<SetOpConversion>(converter);
+  patterns.add<WaitOpConversion>(converter);
+}
