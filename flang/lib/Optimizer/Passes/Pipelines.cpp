@@ -463,10 +463,8 @@ void createDefaultFIRCodeGenPassPipeline(mlir::PassManager &pm,
 
   // Materialize OpenACC private, firstprivate and reduction recipes before
   // FIR-to-LLVM conversion, which expects no recipe ops to remain.
-  if (!disableRecipe) {
-    pm.addPass(fir::acc::createACCRecipeBufferizationPass());
-    pm.addPass(mlir::acc::createACCRecipeMaterialization());
-  }
+  if (config.EnableOpenACC && !disableRecipe)
+    fir::acc::populateFIRCodeGenOpenACCPassPipeline(pm);
 
   fir::addFIRToLLVMPass(pm, config);
   pm.addPass(fir::createEmitMIFGlobalCtors());

@@ -2,6 +2,7 @@ add_flang_library(FIROpenACCTransforms
   ACCDeclareActionConversion.cpp
   ACCInitializeFIRAnalyses.cpp
   ACCOptimizeFirstprivateMap.cpp
+  ACCPipeline.cpp
   ACCRecipeBufferization.cpp
   ACCUseDeviceCanonicalizer.cpp
 
@@ -19,6 +20,7 @@ add_flang_library(FIROpenACCTransforms
 
   MLIR_LIBS
   MLIRIR
+  MLIROpenACCTransforms
   MLIRPass
   MLIROpenACCDialect
   MLIROpenACCUtils
