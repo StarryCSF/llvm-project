@@ -401,7 +401,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       create.push_back(createOp.getVarPtr());
     } else if (auto presentOp = mlir::dyn_cast_or_null<acc::PresentOp>(
                    dataOp.getDefiningOp())) {
-      present.push_back(createOp.getVarPtr());
+      present.push_back(presentOp.getVarPtr());
     }
   }
 
@@ -889,6 +889,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return success();
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::DeleteOp,
+            acc::PresentOp,
             acc::UpdateDeviceOp, acc::GetDevicePtrOp>([](auto op) {
         // NOP
         return success();

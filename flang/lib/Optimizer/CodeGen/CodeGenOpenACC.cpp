@@ -40,6 +40,7 @@ void mlir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::CopyinOp, mlir::acc::CopyoutOp, mlir::acc::DeleteOp,
       mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp,
       mlir::acc::InitOp, mlir::acc::ShutdownOp,
+      mlir::acc::PresentOp,
       mlir::acc::SetOp, mlir::acc::WaitOp>(
       [&](mlir::Operation *op) {
         return typeConverter.isLegal(op->getOperandTypes()) &&
@@ -239,6 +240,7 @@ void mlir::populateOpenACCToLLVMConversionPatterns(
                           mlir::acc::ExitDataOp, mlir::acc::UpdateOp,
                           mlir::acc::CreateOp, mlir::acc::CopyinOp,
                           mlir::acc::CopyoutOp, mlir::acc::DeleteOp,
+                          mlir::acc::PresentOp,
                           mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp>(
       converter, patterns);
 }

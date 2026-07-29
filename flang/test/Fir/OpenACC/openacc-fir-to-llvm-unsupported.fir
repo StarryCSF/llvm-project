@@ -30,16 +30,3 @@ func.func @unsupported_bounds(%arg0: !fir.ref<f32>) {
 
 // DISABLED-LABEL: llvm.func @unsupported_bounds
 // DISABLED: acc.bounds
-
-// -----
-
-// acc.present is not in the legacy translator allowlist.
-
-func.func @unsupported_present(%arg0: !fir.ref<f32>) {
-  // expected-error@+1{{failed to legalize operation 'acc.present'}}
-  %p = acc.present varPtr(%arg0 : !fir.ref<f32>) -> !fir.ref<f32>
-  return
-}
-
-// DISABLED-LABEL: llvm.func @unsupported_present
-// DISABLED: acc.present

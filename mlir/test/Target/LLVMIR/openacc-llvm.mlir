@@ -189,3 +189,18 @@ llvm.func @testdataop(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
 
 // CHECK: declare void @__tgt_target_data_begin_mapper(ptr, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr)
 // CHECK: declare void @__tgt_target_data_end_mapper(ptr, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr)
+
+// -----
+
+llvm.func @testpresentop(%arg0: !llvm.ptr) {
+  %0 = acc.present varPtr(%arg0 : !llvm.ptr) varType(f32) -> !llvm.ptr
+  acc.data dataOperands(%0 : !llvm.ptr) {
+    acc.terminator
+  }
+  llvm.return
+}
+
+// CHECK: @[[PRESENT_MAPTYPES:.*]] = private unnamed_addr constant [1 x i64] [i64 12288]
+// CHECK: define void @testpresentop(ptr %[[PRESENT_PTR:.*]])
+// CHECK: store ptr %[[PRESENT_PTR]], ptr %{{.*}}
+// CHECK: call void @__tgt_target_data_begin_mapper(ptr {{.*}}, i64 -1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[PRESENT_MAPTYPES]], ptr {{.*}}, ptr null)

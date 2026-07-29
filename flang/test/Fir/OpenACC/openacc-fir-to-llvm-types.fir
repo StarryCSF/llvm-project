@@ -40,6 +40,50 @@ func.func @data_region_ref(%arg0: !fir.ref<f32>) {
 
 // -----
 
+func.func @present_ref(%arg0: !fir.ref<f32>) {
+  %present = acc.present varPtr(%arg0 : !fir.ref<f32>) -> !fir.ref<f32>
+  acc.data dataOperands(%present : !fir.ref<f32>) {
+    acc.terminator
+  }
+  return
+}
+
+// CHECK-LABEL: llvm.func @present_ref
+// CHECK-SAME: (%[[ARG0:.*]]: !llvm.ptr)
+// CHECK: %[[PRESENT:.*]] = acc.present varPtr(%[[ARG0]] : !llvm.ptr) varType(f32) -> !llvm.ptr
+// CHECK: acc.data dataOperands(%[[PRESENT]] : !llvm.ptr)
+// CHECK-NOT: !fir.ref
+// CHECK-NOT: unrealized_conversion_cast
+
+// DISABLED-LABEL: llvm.func @present_ref
+// DISABLED: builtin.unrealized_conversion_cast
+// DISABLED: acc.present
+// DISABLED-SAME: !fir.ref<f32>
+
+// -----
+
+func.func @present_box(%arg0: !fir.box<!fir.array<?xf32>>) {
+  %present = acc.present var(%arg0 : !fir.box<!fir.array<?xf32>>) -> !fir.box<!fir.array<?xf32>>
+  acc.data dataOperands(%present : !fir.box<!fir.array<?xf32>>) {
+    acc.terminator
+  }
+  return
+}
+
+// CHECK-LABEL: llvm.func @present_box
+// CHECK: acc.present varPtr(%{{.*}} : !llvm.ptr) varType(!llvm.struct<{{.*}}>) -> !llvm.ptr
+// CHECK: acc.data dataOperands(%{{.*}} : !llvm.ptr)
+// CHECK-NOT: !fir.box
+// CHECK-NOT: !fir.ref
+// CHECK-NOT: unrealized_conversion_cast
+
+// DISABLED-LABEL: llvm.func @present_box
+// DISABLED: builtin.unrealized_conversion_cast
+// DISABLED: acc.present
+// DISABLED-SAME: !fir.box<!fir.array<?xf32>>
+
+// -----
+
 func.func @copyin_box(%arg0: !fir.box<!fir.array<?xf32>>) {
   %copyin = acc.copyin var(%arg0 : !fir.box<!fir.array<?xf32>>) -> !fir.box<!fir.array<?xf32>>
   acc.enter_data dataOperands(%copyin : !fir.box<!fir.array<?xf32>>)
