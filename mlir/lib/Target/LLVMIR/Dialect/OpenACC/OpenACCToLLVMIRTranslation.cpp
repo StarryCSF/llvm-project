@@ -557,6 +557,23 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
 // Conversion functions for init/shutdown/set/wait
 //===----------------------------------------------------------------------===//
 
+/// Map MLIR DeviceType enum to OpenACC runtime acc_device_t values.
+/// MLIR enum values match OpenACC spec; runtime values differ.
+/// TODO: Unify MLIR and runtime enums to eliminate this mapping.
+/// TODO: Multicore  mapped to multicore, currently mapped to host.
+static int64_t mapDeviceTypeToRuntime(acc::DeviceType mlirType) {
+  switch (mlirType) {
+  case acc::DeviceType::None:      return 0; // none
+  case acc::DeviceType::Star:      return 0; // (don't know)
+  case acc::DeviceType::Default:   return 1; // default
+  case acc::DeviceType::Host:      return 2; // host
+  case acc::DeviceType::Multicore: return 2; // host
+  case acc::DeviceType::Nvidia:    return 4; // nvidia
+  case acc::DeviceType::Radeon:    return 5; // amd
+  default:                         return 1; // Unknown->default
+  }
+}
+
 /// Converts acc.init operation into LLVM IR.
 static LogicalResult convertInitOp(acc::InitOp op,
                                     llvm::IRBuilderBase &builder,
@@ -568,27 +585,12 @@ static LogicalResult convertInitOp(acc::InitOp op,
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
   auto *fn = getAccInitFunction(*module, ctx);
 
-  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
-  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
-    switch (mlirType) {
-    case 0: return 0;  // None -> none
-    case 1: return 0;  // Star -> none
-    case 2: return 1;  // Default -> default
-    case 3: return 2;  // Host -> host
-    case 4: return 3;  // Multicore -> not_host
-    case 5: return 4;  // Nvidia -> nvidia
-    case 6: return 5;  // Radeon -> amd
-    default: return 1; // Unknown -> default
-    }
-  };
-
   int64_t deviceType = 1; // default
   if (op.getDeviceTypes()) {
     auto dtypes = op.getDeviceTypes()->getValue();
     if (!dtypes.empty()) {
-      int64_t mlirType = static_cast<int64_t>(
-          mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue());
-      deviceType = mapDeviceType(mlirType);
+      auto initDeviceType = mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue();
+      deviceType = mapDeviceTypeToRuntime(initDeviceType);
     }
   }
 
@@ -633,27 +635,12 @@ static LogicalResult convertShutdownOp(acc::ShutdownOp op,
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
   auto *fn = getAccShutdownFunction(*module, ctx);
 
-  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
-  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
-    switch (mlirType) {
-    case 0: return 0;  // None -> none
-    case 1: return 0;  // Star -> none
-    case 2: return 1;  // Default -> default
-    case 3: return 2;  // Host -> host
-    case 4: return 3;  // Multicore -> not_host
-    case 5: return 4;  // Nvidia -> nvidia
-    case 6: return 5;  // Radeon -> amd
-    default: return 1; // Unknown -> default
-    }
-  };
-
   int64_t deviceType = 1; // default
   if (op.getDeviceTypes()) {
     auto dtypes = op.getDeviceTypes()->getValue();
     if (!dtypes.empty()) {
-      int64_t mlirType = static_cast<int64_t>(
-          mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue());
-      deviceType = mapDeviceType(mlirType);
+      auto shutdownDeviceType = mlir::cast<mlir::acc::DeviceTypeAttr>(dtypes[0]).getValue();
+      deviceType = mapDeviceTypeToRuntime(shutdownDeviceType);
     }
   }
 
@@ -697,22 +684,6 @@ static LogicalResult convertSetOp(acc::SetOp op,
 
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
 
-  // Map MLIR DeviceType enum to OpenACC runtime acc_device_t
-  // MLIR: None=0, Star=1, Default=2, Host=3, Multicore=4, Nvidia=5, Radeon=6
-  // Runtime: none=0, default=1, host=2, not_host=3, nvidia=4, amd=5, spirv=6
-  auto mapDeviceType = [](int64_t mlirType) -> int64_t {
-    switch (mlirType) {
-    case 0: return 0;  // None -> none
-    case 1: return 0;  // Star -> none (not used)
-    case 2: return 1;  // Default -> default
-    case 3: return 2;  // Host -> host
-    case 4: return 3;  // Multicore -> not_host
-    case 5: return 4;  // Nvidia -> nvidia
-    case 6: return 5;  // Radeon -> amd
-    default: return 1; // Unknown -> default
-    }
-  };
-
   // Handle if(condition)
   llvm::Value *cond = nullptr;
   if (op.getIfCond()) {
@@ -748,12 +719,12 @@ static LogicalResult convertSetOp(acc::SetOp op,
       deviceNumVal = builder.CreateZExt(deviceNumVal, llvm::Type::getInt64Ty(ctx));
     int64_t deviceType = 1; // default
     if (op.getDeviceType())
-      deviceType = mapDeviceType(static_cast<int64_t>(*op.getDeviceType()));
+      deviceType = mapDeviceTypeToRuntime(*op.getDeviceType());
     builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
                            builder.getInt64(deviceType), deviceNumVal});
   } else if (op.getDeviceType()) {
     auto *fn = getAccSetDeviceTypeFunction(*module, ctx);
-    int64_t rtDeviceType = mapDeviceType(static_cast<int64_t>(*op.getDeviceType()));
+    int64_t rtDeviceType = mapDeviceTypeToRuntime(*op.getDeviceType());
     builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
                            builder.getInt64(rtDeviceType)});
   }
