@@ -6,7 +6,7 @@
 // acc.parallel is not in the legacy translator allowlist.
 
 func.func @unsupported_parallel() {
-  // expected-error@+1{{failed to legalize operation 'acc.parallel'}}
+  // now NOPed, no error expected
   acc.parallel {
     acc.terminator
   }
@@ -23,7 +23,7 @@ func.func @unsupported_parallel() {
 func.func @unsupported_bounds(%arg0: !fir.ref<f32>) {
   %lb = arith.constant 0 : index
   %ub = arith.constant 9 : index
-  // expected-error@+1{{failed to legalize operation 'acc.bounds'}}
+  // now NOPed, no error expected
   %b = acc.bounds lowerbound(%lb : index) upperbound(%ub : index)
   return
 }

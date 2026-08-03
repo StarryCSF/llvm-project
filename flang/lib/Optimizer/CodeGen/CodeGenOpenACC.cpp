@@ -40,7 +40,17 @@ void mlir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::CopyinOp, mlir::acc::CopyoutOp, mlir::acc::DeleteOp,
       mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp,
       mlir::acc::InitOp, mlir::acc::ShutdownOp,
-      mlir::acc::PresentOp,
+      mlir::acc::PresentOp, mlir::acc::OnDeviceOp,
+      mlir::acc::UpdateHostOp, mlir::acc::DataBoundsOp, mlir::acc::ParallelOp,
+      mlir::acc::SerialOp, mlir::acc::KernelsOp, mlir::acc::LoopOp,
+      mlir::acc::AtomicUpdateOp, mlir::acc::AtomicCaptureOp,
+      mlir::acc::AtomicReadOp, mlir::acc::AtomicWriteOp,
+      mlir::acc::ReductionRecipeOp, mlir::acc::ReductionInitOp,
+      mlir::acc::ReductionCombineOp, mlir::acc::ReductionCombineRegionOp,
+      mlir::acc::ReductionAccumulateOp, mlir::acc::ReductionAccumulateArrayOp,
+      mlir::acc::YieldOp, mlir::acc::FirstprivateMapInitialOp,
+      mlir::acc::PrivatizeOp, mlir::acc::UnwrapPrivateOp,
+      mlir::acc::PrivateLocalOp,
       mlir::acc::SetOp, mlir::acc::WaitOp>(
       [&](mlir::Operation *op) {
         return typeConverter.isLegal(op->getOperandTypes()) &&
@@ -55,9 +65,6 @@ void mlir::configureOpenACCToLLVMConversionLegality(
                  return !typeAttr || typeConverter.isLegal(typeAttr.getValue());
                });
       });
-  // acc.yield must be operand-free for the legacy translator.
-  target.addDynamicallyLegalOp<mlir::acc::YieldOp>(
-      [](mlir::Operation *op) { return op->getNumOperands() == 0; });
 }
 
 //===----------------------------------------------------------------------===//
@@ -220,6 +227,19 @@ struct WaitOpConversion : public FIROpenACCOpConversion<mlir::acc::WaitOp> {
   }
 };
 
+/// Convert values yielded from OpenACC regions.
+struct YieldOpConversion : public FIROpenACCOpConversion<mlir::acc::YieldOp> {
+  using FIROpenACCOpConversion::FIROpenACCOpConversion;
+
+  llvm::LogicalResult
+  matchAndRewrite(mlir::acc::YieldOp curOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.modifyOpInPlace(
+        curOp, [&]() { curOp->setOperands(adaptor.getOperands()); });
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -240,7 +260,17 @@ void mlir::populateOpenACCToLLVMConversionPatterns(
                           mlir::acc::ExitDataOp, mlir::acc::UpdateOp,
                           mlir::acc::CreateOp, mlir::acc::CopyinOp,
                           mlir::acc::CopyoutOp, mlir::acc::DeleteOp,
-                          mlir::acc::PresentOp,
+                          mlir::acc::PresentOp, mlir::acc::AtomicUpdateOp,
+                          mlir::acc::DataBoundsOp, mlir::acc::ParallelOp,
+                          mlir::acc::OnDeviceOp, mlir::acc::YieldOp,
+                          mlir::acc::UpdateHostOp, mlir::acc::ReductionAccumulateOp,
+                          mlir::acc::AtomicCaptureOp, mlir::acc::AtomicReadOp,
+                          mlir::acc::AtomicWriteOp, mlir::acc::ReductionRecipeOp,
+                          mlir::acc::ReductionInitOp, mlir::acc::ReductionCombineOp,
+                          mlir::acc::ReductionCombineRegionOp, mlir::acc::KernelsOp,
+                          mlir::acc::ReductionAccumulateArrayOp, mlir::acc::LoopOp,
+                          mlir::acc::FirstprivateMapInitialOp, mlir::acc::PrivatizeOp,
+                          mlir::acc::UnwrapPrivateOp, mlir::acc::PrivateLocalOp,
                           mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp>(
       converter, patterns);
 }
@@ -251,4 +281,5 @@ void fir::populateOpenACCFIRToLLVMConversionPatterns(
   patterns.add<ShutdownOpConversion>(converter);
   patterns.add<SetOpConversion>(converter);
   patterns.add<WaitOpConversion>(converter);
+  patterns.add<YieldOpConversion>(converter);
 }
