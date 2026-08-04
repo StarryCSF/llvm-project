@@ -509,6 +509,143 @@ static llvm::Value *getI64BoundValue(llvm::IRBuilderBase &builder,
   return result;
 }
 
+/// Convert an OpenACC async operand to the runtime representation.  OpenACC
+/// uses -1 for synchronous execution and -2 for an async clause without an
+/// explicit queue value.
+static llvm::Value *getAsyncRuntimeValue(
+    llvm::IRBuilderBase &builder, LLVM::ModuleTranslation &moduleTranslation,
+    Value asyncValue, bool asyncOnly) {
+  if (asyncValue)
+    return getI64BoundValue(builder, moduleTranslation, asyncValue, -1);
+  return builder.getInt64(asyncOnly ? -2 : -1);
+}
+
+/// Emit the full acctarget wait ABI call used by both explicit wait
+/// directives and wait clauses on data/compute constructs.
+static LogicalResult emitAccWaitCall(
+    llvm::IRBuilderBase &builder, LLVM::ModuleTranslation &moduleTranslation,
+    llvm::Value *srcLocInfo, Operation *op, ValueRange waitOperands,
+    Value waitDevnum, llvm::Value *asyncValue = nullptr) {
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+  llvm::Value *waitList = llvm::ConstantPointerNull::get(
+      llvm::PointerType::getUnqual(ctx));
+
+  uint32_t waitNum = waitOperands.size();
+  if (waitNum != 0) {
+    auto *arrayType = llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx),
+                                           waitNum);
+    waitList = builder.CreateAlloca(arrayType);
+    for (uint32_t i = 0; i < waitNum; ++i) {
+      llvm::Value *waitValue =
+          moduleTranslation.lookupValue(waitOperands[i]);
+      if (!waitValue) {
+        op->emitError("could not find LLVM value for wait operand") << i;
+        return failure();
+      }
+      if (waitValue->getType() != llvm::Type::getInt64Ty(ctx))
+        waitValue = builder.CreateIntCast(waitValue,
+                                          llvm::Type::getInt64Ty(ctx), true);
+      llvm::Value *element = builder.CreateInBoundsGEP(
+          arrayType, waitList,
+          {builder.getInt32(0), builder.getInt32(i)});
+      builder.CreateStore(waitValue, element);
+    }
+  }
+
+  llvm::Value *deviceNum = builder.getInt32(-1);
+  if (waitDevnum) {
+    deviceNum = moduleTranslation.lookupValue(waitDevnum);
+    if (!deviceNum) {
+      op->emitError("could not find LLVM value for wait device number");
+      return failure();
+    }
+    if (deviceNum->getType() != llvm::Type::getInt32Ty(ctx))
+      deviceNum = builder.CreateIntCast(deviceNum,
+                                        llvm::Type::getInt32Ty(ctx), true);
+  }
+
+  if (!asyncValue)
+    asyncValue = builder.getInt64(-1);
+  builder.CreateCall(
+      getAccWaitFunction(*module, ctx),
+      {srcLocInfo, builder.getInt64(0), builder.getInt64(0), deviceNum,
+       builder.getInt32(waitNum), waitList, asyncValue});
+  return success();
+}
+
+static llvm::Value *getStandaloneAsyncValue(
+    acc::EnterDataOp &op, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &moduleTranslation) {
+  return getAsyncRuntimeValue(builder, moduleTranslation, op.getAsyncOperand(),
+                              static_cast<bool>(op.getAsync()));
+}
+
+static llvm::Value *getStandaloneAsyncValue(
+    acc::ExitDataOp &op, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &moduleTranslation) {
+  return getAsyncRuntimeValue(builder, moduleTranslation, op.getAsyncOperand(),
+                              static_cast<bool>(op.getAsync()));
+}
+
+static llvm::Value *getStandaloneAsyncValue(
+    acc::UpdateOp &op, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &moduleTranslation) {
+  return getAsyncRuntimeValue(builder, moduleTranslation, op.getAsyncValue(),
+                              op.hasAsyncOnly());
+}
+
+static llvm::Value *getStandaloneAsyncValue(
+    acc::DeclareEnterOp &, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &) {
+  return builder.getInt64(-1);
+}
+
+static llvm::Value *getStandaloneAsyncValue(
+    acc::DeclareExitOp &, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &) {
+  return builder.getInt64(-1);
+}
+
+static LogicalResult emitStandaloneWait(
+    acc::EnterDataOp &op, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &moduleTranslation, llvm::Value *srcLocInfo) {
+  if (!op.getWaitOperands().empty() || op.getWait())
+    return emitAccWaitCall(builder, moduleTranslation, srcLocInfo, op,
+                           op.getWaitOperands(), op.getWaitDevnum());
+  return success();
+}
+
+static LogicalResult emitStandaloneWait(
+    acc::ExitDataOp &op, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &moduleTranslation, llvm::Value *srcLocInfo) {
+  if (!op.getWaitOperands().empty() || op.getWait())
+    return emitAccWaitCall(builder, moduleTranslation, srcLocInfo, op,
+                           op.getWaitOperands(), op.getWaitDevnum());
+  return success();
+}
+
+static LogicalResult emitStandaloneWait(
+    acc::UpdateOp &op, llvm::IRBuilderBase &builder,
+    LLVM::ModuleTranslation &moduleTranslation, llvm::Value *srcLocInfo) {
+  if (!op.getWaitValues().empty() || op.hasWaitOnly())
+    return emitAccWaitCall(builder, moduleTranslation, srcLocInfo, op,
+                           op.getWaitValues(), op.getWaitDevnum());
+  return success();
+}
+
+static LogicalResult emitStandaloneWait(
+    acc::DeclareEnterOp &, llvm::IRBuilderBase &,
+    LLVM::ModuleTranslation &, llvm::Value *) {
+  return success();
+}
+
+static LogicalResult emitStandaloneWait(
+    acc::DeclareExitOp &, llvm::IRBuilderBase &,
+    LLVM::ModuleTranslation &, llvm::Value *) {
+  return success();
+}
+
 /// Form the host pointer used as the mapping key for a bounded data entry.
 /// The data entry result is also passed to kernel argument lowering, so it
 /// must identify the same section that processOperands maps in the runtime.
@@ -1098,53 +1235,13 @@ static LogicalResult convertWaitOp(acc::WaitOp op,
                                     llvm::IRBuilderBase &builder,
                                     LLVM::ModuleTranslation &moduleTranslation) {
   OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
-  llvm::Module *module = moduleTranslation.getLLVMModule();
-  llvm::LLVMContext &ctx = builder.getContext();
-
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
-  auto *fn = getAccWaitFunction(*module, ctx);
-
-  int64_t deviceType = 0;
-  int32_t deviceNum = -1;
-  if (op.getWaitDevnum()) {
-    llvm::Value *devnumVal = moduleTranslation.lookupValue(op.getWaitDevnum());
-    if (devnumVal->getType() != llvm::Type::getInt32Ty(ctx))
-      devnumVal = builder.CreateZExt(devnumVal, llvm::Type::getInt32Ty(ctx));
-  }
-
-  uint32_t waitNum = op.getWaitOperands().size();
-
-  llvm::Value *waitListPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
-  if (waitNum > 0) {
-    auto *arrTy = llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), waitNum);
-    auto *waitList = builder.CreateAlloca(arrTy);
-    for (uint32_t i = 0; i < waitNum; ++i) {
-      llvm::Value *waitVal = moduleTranslation.lookupValue(op.getWaitOperands()[i]);
-      if (waitVal->getType() != llvm::Type::getInt64Ty(ctx))
-        waitVal = builder.CreateZExt(waitVal, llvm::Type::getInt64Ty(ctx));
-      auto *gep = builder.CreateInBoundsGEP(arrTy, waitList,
-                                            {builder.getInt32(0), builder.getInt32(i)});
-      builder.CreateStore(waitVal, gep);
-    }
-    waitListPtr = waitList;
-  }
-
-  int64_t asyncVal = -1;
-  if (op.getAsync() && op.getAsyncOperand()) {
-    llvm::Value *asyncValL = moduleTranslation.lookupValue(op.getAsyncOperand());
-    if (asyncValL->getType() != llvm::Type::getInt64Ty(ctx))
-      asyncValL = builder.CreateZExt(asyncValL, llvm::Type::getInt64Ty(ctx));
-    builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
-                           builder.getInt64(deviceType), builder.getInt32(deviceNum),
-                           builder.getInt32(waitNum), waitListPtr, asyncValL});
-    return success();
-  }
-
-  builder.CreateCall(fn, {srcLocInfo, builder.getInt64(0),
-                         builder.getInt64(deviceType), builder.getInt32(deviceNum),
-                         builder.getInt32(waitNum), waitListPtr,
-                         builder.getInt64(asyncVal)});
-  return success();
+  llvm::Value *asyncValue = getAsyncRuntimeValue(
+      builder, moduleTranslation, op.getAsyncOperand(),
+      static_cast<bool>(op.getAsync()));
+  return emitAccWaitCall(builder, moduleTranslation, srcLocInfo, op,
+                         op.getWaitOperands(), op.getWaitDevnum(),
+                         asyncValue);
 }
 
 static LogicalResult
@@ -1564,10 +1661,18 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   auto *argsBasePtr = mapperAllocas.ArgsBase;
   auto *argsPtr = mapperAllocas.Args;
   auto *argSizesPtr = mapperAllocas.ArgSizes;
+  llvm::Value *asyncArg = getAsyncRuntimeValue(
+      builder, moduleTranslation, op.getAsyncValue(), op.hasAsyncOnly());
+
+  if (!op.getWaitValues().empty() || op.hasWaitOnly()) {
+    if (failed(emitAccWaitCall(builder, moduleTranslation, srcLocInfo, op,
+                               op.getWaitValues(), op.getWaitDevnum())))
+      return failure();
+  }
   
   emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, builder.getInt64(-1));  // async = -1 (sync)
+                  maptypesArg, mapnamesArg, asyncArg);
 
   // Convert the region.
   llvm::BasicBlock *entryBlock = nullptr;
@@ -1610,8 +1715,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   builder.SetInsertPoint(endDataBlock);
   emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  endMaptypesArg, mapnamesArg,
-                  builder.getInt64(-1));  // async = -1 (sync)
+                  endMaptypesArg, mapnamesArg, asyncArg);
 
   return success();
 }
@@ -1751,11 +1855,19 @@ static LogicalResult convertComputeOp(OpTy &op,
   auto *argsBasePtr = mapperAllocas.ArgsBase;
   auto *argsPtr = mapperAllocas.Args;
   auto *argSizesPtr = mapperAllocas.ArgSizes;
+  llvm::Value *asyncArg = getAsyncRuntimeValue(
+      builder, moduleTranslation, op.getAsyncValue(), op.hasAsyncOnly());
+
+  if (!op.getWaitValues().empty() || op.hasWaitOnly()) {
+    if (failed(emitAccWaitCall(builder, moduleTranslation, srcLocInfo, op,
+                               op.getWaitValues(), op.getWaitDevnum())))
+      return failure();
+  }
 
   // Begin data region
   emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, builder.getInt64(-1));
+                  maptypesArg, mapnamesArg, asyncArg);
 
   // Convert the region body
   llvm::BasicBlock *entryBlock = nullptr;
@@ -1790,7 +1902,7 @@ static LogicalResult convertComputeOp(OpTy &op,
   builder.SetInsertPoint(endBlock);
   emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, builder.getInt64(-1));
+                  maptypesArg, mapnamesArg, asyncArg);
 
   return success();
 }
@@ -1848,11 +1960,16 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   auto *argsBasePtr = mapperAllocas.ArgsBase;
   auto *argsPtr = mapperAllocas.Args;
   auto *argSizesPtr = mapperAllocas.ArgSizes;
+  llvm::Value *asyncArg = getStandaloneAsyncValue(
+      op, builder, moduleTranslation);
+
+  if (failed(emitStandaloneWait(op, builder, moduleTranslation, srcLocInfo)))
+    return failure();
 
   // Emit call to OpenACC data runtime function
   emitAccDataCall(builder, mapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, builder.getInt64(-1));  // async = -1 (sync)
+                  maptypesArg, mapnamesArg, asyncArg);
 
   return success();
 }
@@ -2362,19 +2479,15 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               asyncArg = builder.getInt64(-2);
             }
 
-            // Generate wait calls before the data region if wait operands exist
-            if (!kernelEnvOp.getWaitOperands().empty()) {
-              llvm::Function *waitFn = getAccWaitFunction(*module, ctx);
-              for (mlir::Value waitOp : kernelEnvOp.getWaitOperands()) {
-                llvm::Value *waitV = moduleTranslation.lookupValue(waitOp);
-                if (!waitV) {
-                  kernelEnvOp.emitError("could not find LLVM value for wait operand");
-                  return failure();
-                }
-                if (waitV->getType() != llvm::Type::getInt64Ty(ctx))
-                  waitV = builder.CreateZExt(waitV, llvm::Type::getInt64Ty(ctx));
-                builder.CreateCall(waitFn, {srcLocInfo, waitV});
-              }
+            // Wait clauses synchronize the listed queues before entering the
+            // compute region.  Use the complete acctarget wait ABI.
+            if (!kernelEnvOp.getWaitOperands().empty() ||
+                kernelEnvOp.getWaitOnly()) {
+              if (failed(emitAccWaitCall(
+                      builder, moduleTranslation, srcLocInfo, kernelEnvOp,
+                      kernelEnvOp.getWaitOperands(),
+                      kernelEnvOp.getWaitDevnum())))
+                return failure();
             }
 
             // Begin data region

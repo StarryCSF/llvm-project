@@ -1005,8 +1005,6 @@
 
         public :: acc_set_default_async
         public :: acc_set_default_async_
-        public :: acc_get_default_async
-        public :: acc_get_default_async_
 
         public :: acc_malloc
         public :: acc_malloc_

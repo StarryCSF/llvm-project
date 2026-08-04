@@ -163,7 +163,7 @@ static LogicalResult embedBinaryImpl(StringRef moduleName,
   }();
   builder.CreateStore(moduleObj, modulePtr);
   builder.CreateRetVoid();
-  appendToGlobalCtors(module, loadFn, /*Priority=*/123);
+  appendToGlobalCtors(module, loadFn, /*Priority=*/65535);
 
   auto *unloadFn = Function::Create(
       FunctionType::get(voidTy, /*IsVarArg=*/false),
@@ -176,7 +176,7 @@ static LogicalResult embedBinaryImpl(StringRef moduleName,
       "mgpuModuleUnload", FunctionType::get(voidTy, ptrTy, false));
   builder.CreateCall(moduleUnloadFn, builder.CreateLoad(ptrTy, modulePtr));
   builder.CreateRetVoid();
-  appendToGlobalDtors(module, unloadFn, /*Priority=*/123);
+  appendToGlobalDtors(module, unloadFn, /*Priority=*/65535);
 
   return success();
 }
@@ -388,9 +388,28 @@ llvm::LaunchKernel::createKernelArgArray(mlir::gpu::LaunchFuncOp op) {
   Value *argArray = builder.CreateAlloca(
       ptrTy, ConstantInt::get(intPtrTy, structTypes.size()));
 
+  // Declare __tgt_acc_get_deviceptr for converting host pointers to device
+  // pointers. This bridges acctarget data mapping with mgpuLaunchKernel.
+  // Signature: void* __tgt_acc_get_deviceptr(ident_t*, void*, int64_t, void*)
+  FunctionCallee getDevPtrFn = module.getOrInsertFunction(
+      "__tgt_acc_get_deviceptr",
+      FunctionType::get(ptrTy, ArrayRef<Type *>({ptrTy, ptrTy, i64Ty, ptrTy}),
+                        false));
+  Value *nullPtr = ConstantPointerNull::get(ptrTy);
+  Value *zeroFlag = ConstantInt::get(i64Ty, 0);
+
   for (auto [i, arg] : enumerate(args)) {
+    // If the argument is a pointer, convert it to a device pointer via
+    // __tgt_acc_get_deviceptr. acctarget's __tgt_acc_data_begin maps host
+    // memory to device; this call retrieves the device address so the kernel
+    // can access it on the GPU.
+    Value *storedVal = arg;
+    if (isa<PointerType>(arg->getType())) {
+      storedVal = builder.CreateCall(getDevPtrFn,
+                                     {nullPtr, nullPtr, zeroFlag, arg});
+    }
     Value *structMember = builder.CreateStructGEP(structTy, argStruct, i);
-    builder.CreateStore(arg, structMember);
+    builder.CreateStore(storedVal, structMember);
     Value *arrayMember = builder.CreateConstGEP1_32(ptrTy, argArray, i);
     builder.CreateStore(structMember, arrayMember);
   }

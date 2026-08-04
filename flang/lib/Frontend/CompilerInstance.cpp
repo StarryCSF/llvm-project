@@ -387,6 +387,9 @@ bool CompilerInstance::setUpTargetMachine() {
   tOpts.DisableIntegratedAS = CGOpts.DisableIntegratedAS;
   tOpts.FunctionSections = CGOpts.FunctionSections;
   tOpts.DataSections = CGOpts.DataSections;
+  // Use .init_array instead of .ctors on Linux (matches clang behavior).
+  if (triple.isOSLinux())
+    tOpts.UseInitArray = true;
 
   targetMachine.reset(theTarget->createTargetMachine(
       triple, /*CPU=*/targetOpts.cpu,
