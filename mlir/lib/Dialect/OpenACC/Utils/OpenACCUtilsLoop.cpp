@@ -234,9 +234,18 @@ scf::ForOp convertACCLoopToSCFFor(LoopOp loopOp, RewriterBase &rewriter,
     scfIVs.push_back(forOp.getInductionVar());
   mapACCLoopIVsToSCFIVs(loopOp, scfIVs, rewriter, mapping);
 
-  // Clone the loop body into the innermost scf.for
-  cloneACCRegionIntoForLoop(&loopOp.getRegion(), forOps.back().getBody(),
-                            rewriter.getInsertionPoint(), mapping, rewriter);
+  // A structured acc.loop normally has one block, but control-flow lowering
+  // can leave multiple blocks in the region. Keep that control flow inside an
+  // execute_region instead of calling the single-block cloning helper.
+  if (!loopOp.getRegion().hasOneBlock()) {
+    auto executeRegion = wrapMultiBlockRegionWithSCFExecuteRegion(
+        loopOp.getRegion(), mapping, loc, rewriter);
+    if (!executeRegion)
+      return nullptr;
+  } else {
+    cloneACCRegionIntoForLoop(&loopOp.getRegion(), forOps.back().getBody(),
+                              rewriter.getInsertionPoint(), mapping, rewriter);
+  }
 
   // Denormalize IV uses: original_iv = normalized_iv * orig_step + orig_lb
   for (size_t idx = 0; idx < forOps.size(); ++idx) {
