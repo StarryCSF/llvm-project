@@ -4959,8 +4959,8 @@ public:
     // The OpenACC dialect data clause operations are legal when their
     // operand and result types are LLVM types.
     fir::configureOpenACCToLLVMConversionLegality(target, typeConverter);
-    // GPU dialect ops are legal as-is. ACCCGToGPU already generates i64
-    // operands for gpu.launch, so no Index→i64 conversion is needed here.
+    // GPU dialect ops are legal as-is. ACCCGToGPU generates i64 gpu.launch
+    // dimensions; GPU outlining preserves that ABI for the outlined kernel.
     target.addLegalDialect<mlir::gpu::GPUDialect>();
     target.addDynamicallyLegalOp<mlir::gpu::GPUFuncOp>(
         [&](mlir::gpu::GPUFuncOp op) {

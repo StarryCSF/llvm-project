@@ -65,6 +65,9 @@ void addCfgConversionPass(mlir::PassManager &pm,
     options.setNSW = false;
   addNestedPassToAllTopLevelOperationsConditionally(
       pm, disableCfgConversion, [&]() { return createCFGConversion(options); });
+  if (!disableCfgConversion)
+    addPassToGPUModuleOperations(
+        pm, [&]() { return createCFGConversion(options); });
 }
 
 void addAVC(mlir::PassManager &pm, const llvm::OptimizationLevel &optLevel) {
@@ -309,6 +312,11 @@ void createDefaultFIROptimizerPassPipeline(mlir::PassManager &pm,
   pm.addPass(hlfir::createLowerHLFIRIntrinsics());
   pm.addPass(hlfir::createBufferizeHLFIR({}));
   pm.addPass(hlfir::createConvertHLFIRtoFIR());
+
+  // ACC compute and reduction lowering may introduce sequential fir.do_loop
+  // operations after the initial CFG conversion. Normalize both host and GPU
+  // functions before LLVM conversion.
+  fir::addCfgConversionPass(pm, pc);
 
   pm.addPass(mlir::createSCFToControlFlowPass());
 

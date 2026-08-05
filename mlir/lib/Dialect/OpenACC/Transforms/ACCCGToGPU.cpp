@@ -635,14 +635,23 @@ private:
     return gpu::BlockDimOp::create(rewriter, loc, rewriter.getIndexType(), dim);
   }
 
-  /// Thread id for \p proc, from the launch op or the routine context map.
+  /// Thread id for \p proc, normalized for OpenACC loop lowering.
+  ///
+  /// gpu.launch carries its ABI dimensions and region arguments as i64, while
+  /// OpenACC loop, private-storage and predicate construction use index
+  /// values. Keep that ABI boundary here instead of letting i64 launch
+  /// arguments flow into index arithmetic in the kernel body.
   Value getGPUThreadIdFor(gpu::Processor proc) {
-    return getGPUThreadId(proc, getLaunch(), threadIdMap);
+    Value threadId = getGPUThreadId(proc, getLaunch(), threadIdMap);
+    return getValueOrCreateCastToIndexLike(rewriter, computeRegion.getLoc(),
+                                           rewriter.getIndexType(), threadId);
   }
 
-  /// Grid/block dimension for \p proc, from the launch op or routine map.
+  /// Grid/block dimension for \p proc, normalized for OpenACC lowering.
   Value getGPUSizeFor(gpu::Processor proc) {
-    return getGPUSize(proc, getLaunch(), dimensionMap);
+    Value size = getGPUSize(proc, getLaunch(), dimensionMap);
+    return getValueOrCreateCastToIndexLike(rewriter, computeRegion.getLoc(),
+                                           rewriter.getIndexType(), size);
   }
 };
 
@@ -863,13 +872,13 @@ LogicalResult ACCCGToGPULowering::rewrite() {
     Value gridDimY = launchArgument(gpu::Processor::BlockY);
     Value gridDimZ = launchArgument(gpu::Processor::BlockZ);
 
-    // Convert Index dims to i64 so that gpu.launch operands and region
-    // arguments are i64 instead of Index.  This avoids unrealized_conversion_cast
-    // after FIR→LLVM and ensures gpu.func parameters are LLVM types.
+    // gpu.launch uses i64 dimensions for the final kernel ABI. GPU outlining
+    // preserves this region-argument type when it materializes index-valued
+    // GPU ID and dimension operations in the outlined function.
     auto indexToI64 = [&](Value v) -> Value {
-      if (v.getType().isIndex()) {
-        return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), v);
-      }
+      if (v.getType().isIndex())
+        return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(),
+                                                   v);
       return v;
     };
     blockDimX = indexToI64(blockDimX);

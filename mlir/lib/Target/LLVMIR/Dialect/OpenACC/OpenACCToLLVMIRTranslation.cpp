@@ -339,6 +339,8 @@ convertHostDataOp(acc::HostDataOp op, llvm::IRBuilderBase &builder,
       builder.CreateBr(endBlock);
   }
 
+  LLVM::detail::connectPHINodes(op.getRegion(), moduleTranslation);
+
   builder.SetInsertPoint(endBlock);
   return success();
 }
@@ -1711,6 +1713,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       builder.CreateBr(endDataBlock);
   }
 
+  LLVM::detail::connectPHINodes(op.getRegion(), moduleTranslation);
+
   // Create call to end the data region.
   builder.SetInsertPoint(endDataBlock);
   emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
@@ -1897,6 +1901,8 @@ static LogicalResult convertComputeOp(OpTy &op,
     if (isa<acc::TerminatorOp, acc::YieldOp>(bb->getTerminator()))
       builder.CreateBr(endBlock);
   }
+
+  LLVM::detail::connectPHINodes(op.getRegion(), moduleTranslation);
 
   // End data region
   builder.SetInsertPoint(endBlock);
@@ -2205,6 +2211,8 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                 builder.CreateBr(endBlock);
             }
 
+            LLVM::detail::connectPHINodes(region, moduleTranslation);
+
             builder.SetInsertPoint(endBlock);
             return success();
           })
@@ -2250,6 +2258,8 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               // NoTerminator - just branch to end block
               builder.CreateBr(endBlock);
             }
+
+            LLVM::detail::connectPHINodes(region, moduleTranslation);
 
             builder.SetInsertPoint(endBlock);
             return success();
@@ -2522,6 +2532,9 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
               // KernelEnvironmentOp has NoTerminator - just branch to end block
               builder.CreateBr(endBlock);
             }
+
+            LLVM::detail::connectPHINodes(kernelEnvOp.getRegion(),
+                                           moduleTranslation);
 
             // End data region
             builder.SetInsertPoint(endBlock);

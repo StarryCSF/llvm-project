@@ -26,6 +26,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include <limits>
 
@@ -64,10 +65,19 @@ static void injectGpuIndexOperations(Location loc, Region &launchFuncOpBody,
     createForAllDimensions<gpu::ClusterIdOp>(builder, loc, indexOps);
     createForAllDimensions<gpu::ClusterDimOp>(builder, loc, indexOps);
   }
-  // Replace the leading 12 function args with the respective thread/block index
-  // operations. Iterate backwards since args are erased and indices change.
-  for (const auto &indexOp : enumerate(indexOps))
-    map.map(firstBlock.getArgument(indexOp.index()), indexOp.value());
+  // Replace the leading function args with the respective thread/block index
+  // operations. gpu.launch permits these region arguments to use a wider
+  // integer ABI than index. Preserve that contract while outlining so an
+  // index-valued GPU query is not substituted directly into i64 arithmetic.
+  for (const auto &indexOp : enumerate(indexOps)) {
+    BlockArgument launchArg = firstBlock.getArgument(indexOp.index());
+    Value replacement = indexOp.value();
+    if (replacement.getType() != launchArg.getType())
+      replacement = UnrealizedConversionCastOp::create(
+          builder, loc, launchArg.getType(), replacement)
+                        .getResult(0);
+    map.map(launchArg, replacement);
+  }
 }
 
 /// Identifies operations that are beneficial to sink into kernels. These

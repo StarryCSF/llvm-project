@@ -146,19 +146,20 @@ struct DataOpConversion : public OpenACCFIROpConversion<mlir::acc::DataOp> {
   llvm::LogicalResult
   matchAndRewrite(mlir::acc::DataOp curOp, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
+    llvm::SmallVector<mlir::Value> remappedOperands;
+    if (failed(rewriter.getRemappedValues(curOp->getOperands(),
+                                          remappedOperands)))
+      return mlir::failure();
+
+    // An acc.data region may contain structured control flow lowered from
+    // host code. Convert every block signature, including non-entry blocks,
+    // so the enclosing operation satisfies the region legality check.
+    if (failed(rewriter.convertRegionTypes(&curOp.getRegion(),
+                                           *this->typeConverter)))
+      return mlir::failure();
+
     rewriter.modifyOpInPlace(curOp, [&]() {
-      curOp->setOperands(adaptor.getOperands());
-      // Convert region block argument types
-      if (!curOp.getRegion().empty()) {
-        mlir::Block &block = curOp.getRegion().front();
-        for (unsigned i = 0; i < block.getNumArguments(); ++i) {
-          mlir::BlockArgument arg = block.getArgument(i);
-          mlir::Type convertedType = this->getTypeConverter()->convertType(arg.getType());
-          if (!convertedType)
-            return;
-          block.getArgument(i).setType(convertedType);
-        }
-      }
+      curOp->setOperands(remappedOperands);
     });
     return mlir::success();
   }
