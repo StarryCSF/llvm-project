@@ -1636,7 +1636,7 @@ void ACCCGToGPULowering::createBarrierAfterSeqLoop(Operation *loopOp) {
       return;
     mlir::acc::GPUParallelDimsAttr parDimsAttr =
         mlir::acc::getParDimsAttr(blockLoop);
-    if (parDimsAttr.hasOnlyBlockLevel())
+    if (parDimsAttr && parDimsAttr.hasOnlyBlockLevel())
       createBarrier(loopOp->getLoc(), parDimsAttr);
     return;
   }
@@ -1660,9 +1660,9 @@ void ACCCGToGPULowering::createBarrierAfterSeqLoop(Operation *loopOp) {
           seqLoop->getParentOfType<scf::ParallelOp>()) {
     mlir::acc::GPUParallelDimsAttr parDimsAttr =
         mlir::acc::getParDimsAttr(outerParLoop);
-    if (parDimsAttr.hasOnlyBlockLevel()) {
+    if (parDimsAttr && parDimsAttr.hasOnlyBlockLevel()) {
       createBarrier(loopOp->getLoc(), parDimsAttr);
-    } else if (parDimsAttr.hasOnlyThreadYLevel()) {
+    } else if (parDimsAttr && parDimsAttr.hasOnlyThreadYLevel()) {
       createPerRowBarrier(loopOp->getLoc());
     } else if (parDimsAttr && parDimsAttr.isSeq()) {
       // outerParLoop is a sequential grid-stride remainder of a partitioned
@@ -3441,8 +3441,8 @@ void ACCCGToGPULowering::processCombineRegionOp(
       // with real/imag AccumulateOps. Load from the private memref which
       // holds the reconstructed complex value.
       Value privateMemref = mapping.lookupOrDefault(op.getSrcVar());
-      MemRefType memrefTy = cast<MemRefType>(privateMemref.getType());
-      if (isa<ComplexType>(memrefTy.getElementType())) {
+      if (MemRefType memrefTy = dyn_cast<MemRefType>(privateMemref.getType());
+          memrefTy && isa<ComplexType>(memrefTy.getElementType())) {
         Location loc = op.getLoc();
         Value reductionResult =
             memref::LoadOp::create(rewriter, loc, privateMemref);

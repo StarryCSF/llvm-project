@@ -1025,23 +1025,20 @@ bool OpenACCMappableModel<Ty>::generateCopy(
   if (!bounds.empty())
     std::tie(source, destination) =
         genArraySectionsInRecipe(builder, loc, bounds, source, destination);
-  // The source and the destination of the firstprivate copy cannot alias,
-  // the destination is already properly allocated, so a simple assignment
-  // can be generated right away to avoid ending-up with runtime calls
-  // for arrays of numerical, logical and, character types.
-  //
-  // The temporary_lhs flag allows indicating that user defined assignments
-  // should not be called while copying components, and that the LHS and RHS
-  // are known to not alias since the LHS is a created object.
-  //
-  // TODO: detect cases where user defined assignment is needed and add a TODO.
-  // using temporary_lhs allows more aggressive optimizations of simple derived
-  // types. Existing compilers supporting OpenACC do not call user defined
-  // assignments, some use case is needed to decide what to do.
-  source = hlfir::loadTrivialScalar(loc, builder, source);
-  hlfir::AssignOp::create(builder, loc, source, destination, /*realloc=*/false,
-                          /*keep_lhs_length_if_realloc=*/false,
-                          /*temporary_lhs=*/true);
+  // The source and destination of a firstprivate copy cannot alias, and the
+  // destination is already allocated. Generate an element-wise copy for
+  // arrays so the device recipe does not retain a Fortran array-assignment
+  // runtime call such as _FortranAAssignTemporary.
+  if (source.isArray() && destination.isArray()) {
+    hlfir::genNoAliasArrayAssignment(
+        loc, builder, source, destination, /*emitWorkshareLoop=*/false,
+        /*temporaryLHS=*/false);
+  } else {
+    source = hlfir::loadTrivialScalar(loc, builder, source);
+    hlfir::AssignOp::create(
+        builder, loc, source, destination, /*realloc=*/false,
+        /*keep_lhs_length_if_realloc=*/false, /*temporary_lhs=*/true);
+  }
   return true;
 }
 
