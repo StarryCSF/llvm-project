@@ -726,7 +726,8 @@ void fir::configureOpenACCToLLVMConversionLegality(
   // OpenACC compute construct operations (parallel/serial/loop) are legal when
   // their operand, result, and region types are LLVM types.
   target.addDynamicallyLegalOp<
-      mlir::acc::ParallelOp, mlir::acc::SerialOp, mlir::acc::LoopOp>(
+      mlir::acc::ParallelOp, mlir::acc::SerialOp, mlir::acc::KernelsOp,
+      mlir::acc::LoopOp, mlir::acc::OnDeviceOp>(
       [&](mlir::Operation *op) {
     return typeConverter.isLegal(op->getOperandTypes()) &&
            typeConverter.isLegal(op->getResultTypes()) &&
