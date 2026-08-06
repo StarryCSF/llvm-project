@@ -722,6 +722,19 @@ void ACCImplicitData::generateImplicitDataOps(
   SetVector<Value> liveInValues;
   getUsedValuesDefinedAbove(accRegion, liveInValues);
 
+  // A reduction's original variable is consumed by acc.reduction as a
+  // clause operand.  It is not necessarily reported by the generic live-in
+  // collection once the reduction clause has been legalized, but it still
+  // needs the same implicit copy semantics as the reduction itself.  Keep
+  // the original value in the candidate set so the existing copyin/copyout
+  // path can map it before the device region and restore it afterwards.
+  accRegion.walk([&](acc::ReductionOp reductionOp) {
+    Value var = reductionOp.getVarPtr();
+    if (var && var.getParentRegion() &&
+        !accRegion.isAncestor(var.getParentRegion()))
+      liveInValues.insert(var);
+  });
+
   // 2) Run the filtering to find relevant pointers that need copied.
   auto isCandidate{[&](Value val) -> bool {
     return isCandidateForImplicitData(val, accRegion, accSupport);
