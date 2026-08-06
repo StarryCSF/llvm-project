@@ -349,24 +349,30 @@ convertHostDataOp(acc::HostDataOp op, llvm::IRBuilderBase &builder,
 // Utility functions
 //===----------------------------------------------------------------------===//
 
-/// Flag values are extracted from openmp/libomptarget/include/omptarget.h and
-/// mapped to corresponding OpenACC flags.
-/// TGT_ACC_MAPTYPE flags from Interface.h:
-/// TO = 0x1, FROM = 0x2, ALLOC = 0x4, DELETE = 0x8, PTR_AND_OBJ = 0x10
-static constexpr uint64_t kCreateFlag = 0x004;  // ALLOC
-static constexpr uint64_t kDeviceCopyinFlag = 0x001;  // TO
-static constexpr uint64_t kHostCopyoutFlag = 0x002;   // FROM
-static constexpr uint64_t kDeleteFlag = 0x008;        // DELETE
-static constexpr uint64_t kPtrAndObjFlag = 0x010;     // PTR_AND_OBJ
-static constexpr uint64_t kPresentFlag = 0x1000;
-// Runtime extension to implement the OpenACC second reference counter.
-static constexpr uint64_t kHoldFlag = 0x2000;
-// OMP_TGT_MAPTYPE_ATTACH from omptarget.h - used for attach/detach.
-static constexpr uint64_t kAttachFlag = 0x4000;
-// no_create: no ALLOC/TO/FROM flags, just PTR_AND_OBJ to register presence.
-static constexpr uint64_t kNoCreateFlag = 0x0;
-// Device pointer - already mapped on device.
-static constexpr uint64_t kDevicePtrFlag = 0x400;  // DEVPTR
+/// Values mirror the TGT_ACC_MAPTYPE enum in offload/libacctarget/Interface.h.
+/// Keep this translation layer independent of the acctarget headers, but do
+/// not invent bits: the values are part of the host/runtime ABI.
+static constexpr uint64_t kNoneFlag = 0x0;              // TGT_ACC_MAPTYPE_NONE
+static constexpr uint64_t kDeviceCopyinFlag = 0x1;     // TGT_ACC_MAPTYPE_TO
+static constexpr uint64_t kHostCopyoutFlag = 0x2;      // TGT_ACC_MAPTYPE_FROM
+static constexpr uint64_t kDeleteFlag = 0x8;            // TGT_ACC_MAPTYPE_FINALIZE
+static constexpr uint64_t kPtrAndObjFlag = 0x10;        // TGT_ACC_MAPTYPE_PTR_AND_OBJ
+static constexpr uint64_t kPrivateFlag = 0x80;          // TGT_ACC_MAPTYPE_PRIVATE
+static constexpr uint64_t kLiteralFlag = 0x100;        // TGT_ACC_MAPTYPE_LITERAL
+static constexpr uint64_t kDevicePtrFlag = 0x400;      // TGT_ACC_MAPTYPE_DEVPTR
+static constexpr uint64_t kManagedDevicePtrFlag = 0x800; // MANAGED_DEVPTR
+static constexpr uint64_t kNoCreateFlag = 0x2000;      // TGT_ACC_MAPTYPE_NO_CREATE
+static constexpr uint64_t kGangPrivateFlag = 0x4000;   // TGT_ACC_MAPTYPE_GANG_PRIVATE
+static constexpr uint64_t kWorkerPrivateFlag = 0x8000; // TGT_ACC_MAPTYPE_WORKER_PRIVATE
+static constexpr uint64_t kVectorPrivateFlag = 0x10000; // TGT_ACC_MAPTYPE_VECTOR_PRIVATE
+static constexpr uint64_t kInitZeroFlag = 0x20000;     // TGT_ACC_MAPTYPE_INIT_ZERO
+static constexpr uint64_t kDeviceResidentFlag = 0x40000; // TGT_ACC_MAPTYPE_DEVICE_RESIDENT
+static constexpr uint64_t kIfPresentFlag = 0x80000;    // TGT_ACC_MAPTYPE_IF_PRESENT
+static constexpr uint64_t kPresentFlag = 0x100000;     // TGT_ACC_MAPTYPE_PRESENT
+
+// The create operation has no map modifier in Interface.h. Attach/detach is
+// represented by PTR_AND_OBJ and, for detach, FINALIZE.
+static constexpr uint64_t kCreateFlag = kNoneFlag;
 
 /// Default value for the device id
 static constexpr int64_t kDefaultDevice = -1;
@@ -872,7 +878,7 @@ processDataOperands(llvm::IRBuilderBase &builder,
 
   // Attach operands are handled as `attach` call.
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
-                             nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags, names,
+                             nbTotalOperands, kPtrAndObjFlag, flags, names,
                              index, mapperAllocas)))
     return failure();
 
@@ -927,7 +933,7 @@ processDataOperands(llvm::IRBuilderBase &builder,
 
   // Detach operands are handled as `detach` call (attach + delete + PTR_AND_OBJ).
   if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
-                             nbTotalOperands, kAttachFlag | kDeleteFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kDeleteFlag | kPtrAndObjFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -1009,7 +1015,7 @@ processDataOperands(llvm::IRBuilderBase &builder,
                              flags, names, index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, present,
-                             totalNbOperand, kPresentFlag | kHoldFlag, flags,
+                             totalNbOperand, kPresentFlag | kNoCreateFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, deviceptr,
@@ -1074,7 +1080,7 @@ processDataOperands(llvm::IRBuilderBase &builder,
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
                              totalNbOperand,
-                             kAttachFlag | kDeleteFlag | kPtrAndObjFlag,
+                             kDeleteFlag | kPtrAndObjFlag,
                              flags, names, index, mapperAllocas)))
     return failure();
   return success();
@@ -1578,7 +1584,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       return failure();
 
   if (failed(processOperands(builder, moduleTranslation, op, present,
-                             nbTotalOperands, kPresentFlag | kHoldFlag, flags,
+                             nbTotalOperands, kPresentFlag | kNoCreateFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -1590,7 +1596,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // Attach operands are handled as `attach` call.
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
-                             nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kPtrAndObjFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -1633,9 +1639,9 @@ static LogicalResult convertDataOp(acc::DataOp &op,
     appendEndFlag(data, isCopyout ? (kHostCopyoutFlag | kPtrAndObjFlag)
                                   : (kDeleteFlag | kPtrAndObjFlag));
   }
-  appendEndFlags(present, kPresentFlag | kHoldFlag);
+  appendEndFlags(present, kPresentFlag | kNoCreateFlag);
   appendEndFlags(noCreateOperands, kNoCreateFlag | kPtrAndObjFlag);
-  appendEndFlags(attachOperands, kAttachFlag | kPtrAndObjFlag);
+  appendEndFlags(attachOperands, kPtrAndObjFlag);
   appendEndFlags(deviceptrOperands, kDevicePtrFlag | kPtrAndObjFlag);
 
   llvm::GlobalVariable *endMaptypes =
@@ -1819,7 +1825,7 @@ static LogicalResult convertComputeOp(OpTy &op,
 
   // Present
   if (failed(processOperands(builder, moduleTranslation, op, present,
-                             nbTotalOperands, kPresentFlag | kHoldFlag, flags,
+                             nbTotalOperands, kPresentFlag | kNoCreateFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -1831,7 +1837,7 @@ static LogicalResult convertComputeOp(OpTy &op,
 
   // Attach
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
-                             nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kPtrAndObjFlag, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -2372,7 +2378,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, present,
-                                       nbTotalOperands, kPresentFlag | kHoldFlag, flags,
+                                       nbTotalOperands, kPresentFlag | kNoCreateFlag, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, noCreateOperands,
@@ -2380,7 +2386,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, attachOperands,
-                                       nbTotalOperands, kAttachFlag | kPtrAndObjFlag, flags,
+                                       nbTotalOperands, kPtrAndObjFlag, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, deviceptrOperands,
@@ -2440,9 +2446,9 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                   getMappingFlag(kernelEnvOp, data, flag, isScalar));
             }
             appendEndFlags(privateOperands, kDeleteFlag);
-            appendEndFlags(present, kPresentFlag | kHoldFlag);
+            appendEndFlags(present, kPresentFlag | kNoCreateFlag);
             appendEndFlags(noCreateOperands, kNoCreateFlag | kPtrAndObjFlag);
-            appendEndFlags(attachOperands, kAttachFlag | kPtrAndObjFlag);
+            appendEndFlags(attachOperands, kPtrAndObjFlag);
             appendEndFlags(deviceptrOperands, kDevicePtrFlag | kPtrAndObjFlag);
 
             llvm::GlobalVariable *maptypes =
@@ -2544,7 +2550,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
 
             return success();
           })
-      .Case<acc::ParallelOp, acc::SerialOp>(
+      .Case<acc::ParallelOp, acc::SerialOp, acc::KernelsOp>(
           [&](auto computeOp) {
             return convertComputeOp(computeOp, builder, moduleTranslation);
           })
@@ -2553,6 +2559,14 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             // Loop op - NOP for now, region body handled by enclosing function.
             return success();
           })
+      .Case<acc::OnDeviceOp>([&](acc::OnDeviceOp op) {
+        // acc_on_device: returns true when running on device.
+        // For host compilation, return false (i1 zero).
+        // TODO: Add proper device detection.
+        llvm::Value *result = builder.getInt1(false);
+        moduleTranslation.mapValue(op.getResult(), result);
+        return success();
+      })
       .Case<acc::RoutineOp>([](auto) {
         // The routine declaration is consumed by the OpenACC routine passes;
         // it carries no runtime behavior into LLVM IR.
