@@ -22,6 +22,7 @@
 #include "flang/Optimizer/Builder/Complex.h"
 #include "flang/Optimizer/Builder/FIRBuilder.h"
 #include "flang/Optimizer/Builder/MutableBox.h"
+#include "flang/Optimizer/Builder/OpenACCIntrinsicCall.h"
 #include "flang/Optimizer/Builder/PPCIntrinsicCall.h"
 #include "flang/Optimizer/Builder/Runtime/Allocatable.h"
 #include "flang/Optimizer/Builder/Runtime/CUDA/Descriptor.h"
@@ -1931,7 +1932,8 @@ lookupRuntimeGenerator(llvm::StringRef name, bool isPPCTarget) {
 std::optional<IntrinsicHandlerEntry>
 lookupIntrinsicHandler(fir::FirOpBuilder &builder,
                        llvm::StringRef intrinsicName,
-                       std::optional<mlir::Type> resultType) {
+                       std::optional<mlir::Type> resultType,
+                       bool isBindcCall) {
   llvm::StringRef name = genericName(intrinsicName);
   if (const IntrinsicHandler *handler = findIntrinsicHandler(name))
     return std::make_optional<IntrinsicHandlerEntry>(handler);
@@ -1943,6 +1945,10 @@ lookupIntrinsicHandler(fir::FirOpBuilder &builder,
   // TODO: Look for CUDA intrinsic handlers only if CUDA is enabled.
   if (const IntrinsicHandler *cudaHandler = findCUDAIntrinsicHandler(name))
     return std::make_optional<IntrinsicHandlerEntry>(cudaHandler);
+  // TODO: Look for OpenACC intrinsic handlers only if OpenACC is enabled.
+  if (const IntrinsicHandler *openaccHandler =
+          findOpenACCIntrinsicHandler(name, isBindcCall))
+    return std::make_optional<IntrinsicHandlerEntry>(openaccHandler);
   // Subroutines should have a handler.
   if (!resultType)
     return std::nullopt;
@@ -9381,6 +9387,10 @@ getIntrinsicArgumentLowering(llvm::StringRef specificName) {
   if (const IntrinsicHandler *cudaHandler = findCUDAIntrinsicHandler(name))
     if (!cudaHandler->argLoweringRules.hasDefaultRules())
       return &cudaHandler->argLoweringRules;
+  if (const IntrinsicHandler *openaccHandler =
+          findOpenACCIntrinsicHandler(name))
+    if (!openaccHandler->argLoweringRules.hasDefaultRules())
+      return &openaccHandler->argLoweringRules;
   return nullptr;
 }
 

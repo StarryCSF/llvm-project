@@ -798,7 +798,8 @@ mlir::Value genLibSplitComplexArgsCall(fir::FirOpBuilder &builder,
 /// \p intrinsicName.
 std::optional<IntrinsicHandlerEntry>
 lookupIntrinsicHandler(fir::FirOpBuilder &, llvm::StringRef intrinsicName,
-                       std::optional<mlir::Type> resultType);
+                       std::optional<mlir::Type> resultType,
+                       bool isBindcCall = false);
 
 /// Generate a TODO error message for an as yet unimplemented intrinsic.
 void crashOnMissingIntrinsic(mlir::Location loc, llvm::StringRef name);
