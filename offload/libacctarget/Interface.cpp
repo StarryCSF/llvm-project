@@ -515,7 +515,7 @@ struct KernelArgsMappingInfoTy {
   // TPR), or erase TPR.
   Info->TPR.setEntry(nullptr);
 
-  if (!Info->ShouldDelete)
+  if (!DelEntry)
     return Ret;
 
   Ret = Device->getMappingInfo().eraseMapEntry(HDTTMap, Entry, Info->DataSize);
