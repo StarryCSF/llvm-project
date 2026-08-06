@@ -3413,6 +3413,54 @@ void ACCCGToGPULowering::processCombineRegionOp(
           .getDefiningOp());
   SmallVector<mlir::acc::GPUParallelDimAttr> parDims =
       getReductionCombineParDims(op);
+  // acc.loop reductions (`!$acc loop worker reduction(...)`) do not attach a
+  // par_dims attribute to the combine region (only acc.parallel reductions
+  // do).  Infer the reduction dimensions from the parallel loop that writes
+  // the reduction buffer: the buffer is declared and accumulated inside the
+  // loop body, so walk the users of the source buffer to find that loop and
+  // reuse its par_dims.  Without this, a worker reduction degenerates into a
+  // per-thread combine of only the thread's own partial sum and the
+  // cross-thread reduction is silently lost.
+  //
+  // The source buffer has multiple users: the fir.declare inside the
+  // reduction loop body (which carries the loop's par_dims) and the loads
+  // inside the combine region itself (whose parent parallel is the *outer*
+  // loop, e.g. gang).  The thread-level dimension is the meaningful one for
+  // a cross-thread reduction, so scan all users and prefer a ThreadX/ThreadY
+  // dimension over a block dimension.
+  if (parDims.empty()) {
+    SmallVector<scf::ParallelOp> seenParLoops;
+    SmallVector<mlir::acc::GPUParallelDimAttr> blockDims;
+    for (Operation *user : op.getSrcVar().getUsers()) {
+      if (scf::ParallelOp par = user->getParentOfType<scf::ParallelOp>()) {
+        if (llvm::is_contained(seenParLoops, par))
+          continue;
+        seenParLoops.push_back(par);
+        if (mlir::acc::GPUParallelDimsAttr dims =
+                mlir::acc::getParDimsAttr(par)) {
+          for (mlir::acc::GPUParallelDimAttr d : dims.getArray()) {
+            if (d.isSeq())
+              continue;
+            if (d.isThreadX() || d.isThreadY()) {
+              parDims.push_back(d);
+            } else {
+              blockDims.push_back(d);
+            }
+          }
+        }
+      }
+    }
+    if (parDims.empty())
+      parDims = blockDims;
+  }
+  // When the reduction loop has been serialized (no thread-level par_dims),
+  // the combine region executes in a single thread and the generic
+  // load/combine/store path is correct.  The workgroup shared-memory path
+  // is not code-generable in the FIR-to-LLVM pipeline (no address-space
+  // conversion for gpu.launch bodies), so we rely on ACCComputeLowering
+  // to serialize worker/vector reductions.
+
+  // Process the reduction combine region by inlining its body.
   for (auto parDim : parDims) {
     if (parDim.isAnyBlock() && !destIsPerThreadPrivate) {
       // Block reduction directly stores to the accumulator using atomic.
@@ -3553,6 +3601,35 @@ void ACCCGToGPULowering::processOp(Operation *op) {
     processCombineRegionOp(combineRegionOp);
   } else if (acc::ReductionOp accReductionOp = dyn_cast<acc::ReductionOp>(op)) {
     mapping.map(accReductionOp->getResult(0), accReductionOp.getVarPtr());
+  } else if (acc::OnDeviceOp onDeviceOp = dyn_cast<acc::OnDeviceOp>(op)) {
+    // Inside device code acc_on_device() always reports that we are running
+    // on the device.  Per OpenACC 3.3, the result is true when dev_type
+    // matches the current device type (or is not host/not none).  In GPU
+    // kernel code the only types that can be false are host (2) and none (0);
+    // all other acc_device_t values (default=1, not_host=3, concrete types
+    // 4..6, current=10) describe an accelerator execution context.  Emit the
+    // equivalent of `dev_type != 0 && dev_type != 2` instead of leaving an
+    // acc.on_device op that would be translated to an unresolved call to the
+    // host-only acc_on_device runtime symbol.
+    Location loc = onDeviceOp.getLoc();
+    Value devType = mapping.lookupOrDefault(onDeviceOp.getDeviceType());
+    Type i32Ty = rewriter.getI32Type();
+    if (devType.getType() != i32Ty)
+      devType = rewriter.create<arith::IndexCastOp>(
+          loc, i32Ty, devType);
+    Value zero = rewriter.create<arith::ConstantOp>(
+        loc, i32Ty, rewriter.getIntegerAttr(i32Ty, 0));
+    Value two = rewriter.create<arith::ConstantOp>(
+        loc, i32Ty, rewriter.getIntegerAttr(i32Ty, 2));
+    Value notNone = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::ne, devType, zero);
+    Value notHost = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::ne, devType, two);
+    Value result = rewriter.create<arith::AndIOp>(loc, notNone, notHost);
+    if (onDeviceOp.getResult().getType() != rewriter.getI1Type())
+      result = rewriter.create<arith::IndexCastOp>(
+          loc, onDeviceOp.getResult().getType(), result);
+    mapping.map(onDeviceOp.getResult(), result);
   } else if (mapping.contains(op)) {
     // do nothing, operation in mapping signals it is already taken care of
     LLVM_DEBUG(llvm::dbgs() << "skipping mapped op: " << *op << "\n");

@@ -155,6 +155,17 @@ static DeviceType getParDimsDeviceType(ComputeConstructT computeOp,
 
 /// Map loop parallelism clauses (gang/worker/vector) to GPU parallel
 /// dimensions using the given mapping policy.
+///
+/// Loops carrying a reduction are mapped to gang (block) parallelism only.
+/// A worker or vector reduction requires a cross-thread reduction of the
+/// per-thread partial sums, which needs workgroup (shared) memory; the
+/// project-llvm FIR-to-LLVM pipeline has no workgroup address-space support
+/// for `gpu.launch` bodies (only `gpu.func` attributions), so shared-memory
+/// reductions cannot be code-generated there.  Mapping the reduction loop
+/// to a single gang instead executes it serially on one thread, which is
+/// semantically correct (matching the host fallback) and avoids the missing
+/// cross-thread machinery.  Non-reduction loops keep their full worker/
+/// vector parallelism.
 static SmallVector<GPUParallelDimAttr>
 getParallelDimensions(LoopOp loopOp, const ACCToGPUMappingPolicy &policy,
                       DeviceType deviceType) {
@@ -162,9 +173,10 @@ getParallelDimensions(LoopOp loopOp, const ACCToGPUMappingPolicy &policy,
   SmallVector<GPUParallelDimAttr> parDims;
   auto *ctx = loopOp->getContext();
 
-  if (loopOp.hasVector(deviceType))
+  bool hasReduction = !loopOp.getReductionOperands().empty();
+  if (loopOp.hasVector(deviceType) && !hasReduction)
     insertParDim(parDims, policy.vectorDim(ctx));
-  if (loopOp.hasWorker(deviceType))
+  if (loopOp.hasWorker(deviceType) && !hasReduction)
     insertParDim(parDims, policy.workerDim(ctx));
   if (auto gangDimValue = loopOp.getGangValue(GangArgType::Dim, deviceType)) {
     if (auto gangDimDefOp =
@@ -183,6 +195,17 @@ getParallelDimensions(LoopOp loopOp, const ACCToGPUMappingPolicy &policy,
 /// operand and num_workers / vector_length are the constant 1, and otherwise
 /// `acc.par_width` from gang/worker/vector (device-type operands first, then
 /// default DeviceType::None).
+///
+/// When a parallel loop is written without an explicit num_gangs /
+/// num_workers / vector_length clause (`!$acc parallel loop gang` or
+/// `!$acc loop worker`), OpenACC 3.3 leaves the launch extent implementation
+/// defined.  For GPU offloading the natural choice is the trip count of the
+/// loop mapped to that dimension: the loop body is executed once per
+/// gang/worker/vector lane, so launching fewer lanes than the trip count would
+/// silently drop iterations and launching more would be wasteful.  Collect the
+/// trip counts of all `scf.parallel` loops in the compute region that carry
+/// `acc.par_dims`, and use them for any launch dimension that has no explicit
+/// clause value.
 template <typename ComputeConstructT>
 static SmallVector<Value>
 assignKnownLaunchArgs(ComputeConstructT computeOp, DeviceType deviceType,
@@ -229,6 +252,46 @@ assignKnownLaunchArgs(ComputeConstructT computeOp, DeviceType deviceType,
           getValueOrCreateCastToIndexLike(rewriter, vectorLength.getLoc(),
                                           indexTy, vectorLength),
           policy.vectorDim(ctx)));
+    }
+
+    // Dimensions that have no explicit clause value default to the trip count
+    // of the loop that is mapped to that dimension.  OpenACC loop lowering
+    // normalizes `scf.parallel` bounds to lb=0, step=1, ub=tripCount, so the
+    // upper bound of the loop carrying the matching `acc.par_dims` entry is
+    // the number of GPU lanes needed to cover the iteration space.
+    if (values.size() < 3) {
+      SmallVector<std::pair<mlir::acc::GPUParallelDimAttr, Value>> inferred;
+      computeOp.getRegion().walk([&](scf::ParallelOp par) {
+        auto parDims = mlir::acc::getParDimsAttr(par);
+        if (!parDims || parDims.getArray().size() != 1)
+          return;
+        mlir::acc::GPUParallelDimAttr dim = parDims.getArray().front();
+        // Skip sequential and dimensions that already have an explicit
+        // clause value.
+        if (dim.isSeq())
+          return;
+        bool slotFilled = false;
+        for (Value v : values) {
+          if (auto pw = v.getDefiningOp<ParWidthOp>())
+            if (pw.getParDim() == dim) {
+              slotFilled = true;
+              break;
+            }
+        }
+        if (slotFilled)
+          return;
+        // scf.parallel bounds are normalized: ub == trip count.
+        if (par.getUpperBound().size() != 1)
+          return;
+        Value tripCount = par.getUpperBound().front();
+        // Avoid double-counting nested loops mapped to the same dimension.
+        if (llvm::any_of(inferred, [&](auto &p) { return p.first == dim; }))
+          return;
+        inferred.emplace_back(dim, tripCount);
+      });
+      for (auto [dim, tripCount] : inferred)
+        values.push_back(ParWidthOp::create(rewriter, loc, indexTy, tripCount,
+                                            dim));
     }
     return values;
   } else {
