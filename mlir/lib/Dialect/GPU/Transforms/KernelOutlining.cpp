@@ -348,6 +348,10 @@ class GpuKernelOutliningPass
 public:
   using Base::Base;
 
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<NVVM::NVVMDialect>();
+  }
+
   LogicalResult initialize(MLIRContext *context) override {
     // Initialize the data layout specification from the data layout string.
     if (!dataLayoutStr.empty()) {

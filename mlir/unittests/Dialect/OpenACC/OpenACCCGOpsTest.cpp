@@ -160,7 +160,8 @@ TEST_F(OpenACCCGOpsTest, WireHoistedValueThroughInsDefinedInside) {
   HostContext host(context, loc, b);
   auto c128 = arith::ConstantIndexOp::create(host.rewriter, loc, 128);
   auto threadXDim = GPUParallelDimAttr::threadXDim(&context);
-  auto pw = ParWidthOp::create(host.rewriter, loc, c128, threadXDim);
+  auto pw = ParWidthOp::create(host.rewriter, loc, c128.getResult().getType(),
+                                c128.getResult(), threadXDim);
 
   Region sourceRegion;
   populateSourceRegionSingleBlock(sourceRegion, context, loc,

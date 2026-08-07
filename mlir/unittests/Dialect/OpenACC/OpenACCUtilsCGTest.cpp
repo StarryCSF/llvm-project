@@ -129,7 +129,8 @@ TEST_F(OpenACCUtilsCGTest, buildComputeRegionWithLaunchArgs) {
 
   auto c128 = arith::ConstantIndexOp::create(rewriter, loc, 128);
   auto threadXDim = GPUParallelDimAttr::threadXDim(&context);
-  auto pw = ParWidthOp::create(rewriter, loc, c128, threadXDim);
+  auto pw = ParWidthOp::create(rewriter, loc, c128.getResult().getType(),
+                                c128.getResult(), threadXDim);
 
   Region sourceRegion;
   Block *srcBlock = new Block();
@@ -139,7 +140,7 @@ TEST_F(OpenACCUtilsCGTest, buildComputeRegionWithLaunchArgs) {
   YieldOp::create(srcBuilder, loc);
 
   IRMapping mapping;
-  auto cr = buildComputeRegion(loc, {pw}, /*inputArgs=*/{},
+  auto cr = buildComputeRegion(loc, {pw.getResult()}, /*inputArgs=*/{},
                                ParallelOp::getOperationName(), sourceRegion,
                                rewriter, mapping);
 

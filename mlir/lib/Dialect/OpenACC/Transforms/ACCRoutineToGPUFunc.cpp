@@ -283,6 +283,10 @@ public:
   using acc::impl::ACCRoutineToGPUFuncBase<
       ACCRoutineToGPUFunc>::ACCRoutineToGPUFuncBase;
 
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<NVVM::NVVMDialect>();
+  }
+
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     if (mod.getOps<RoutineOp>().empty()) {
