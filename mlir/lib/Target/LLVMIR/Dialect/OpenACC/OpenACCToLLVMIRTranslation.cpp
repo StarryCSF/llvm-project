@@ -1677,10 +1677,23 @@ static LogicalResult convertDataOp(acc::DataOp &op,
                                op.getWaitValues(), op.getWaitDevnum())))
       return failure();
   }
-  
-  emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
-                  argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, asyncArg);
+
+  // Materialize the optional if condition.
+  llvm::Value *cond = nullptr;
+  if (op.getIfCond()) {
+    cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+  }
+
+  // No if clause: call data_begin directly before the region.
+  if (!op.getIfCond()) {
+    emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
+                    argNumVal, argsBasePtr, argsPtr, argSizesPtr,
+                    maptypesArg, mapnamesArg, asyncArg);
+  }
 
   // Convert the region.
   llvm::BasicBlock *entryBlock = nullptr;
@@ -1695,7 +1708,27 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   auto afterDataRegion = builder.saveIP();
 
-  llvm::UncondBrInst *sourceTerminator = builder.CreateBr(entryBlock);
+  llvm::BasicBlock *skipBlock = nullptr;
+  llvm::Instruction *sourceTerminator;
+
+  if (cond) {
+    // Create a block for skipping the data region when if condition is false.
+    skipBlock = llvm::BasicBlock::Create(
+        ctx, "acc.data.skip", builder.GetInsertBlock()->getParent());
+    // Create a conditional branch: if true, enter data region; if false, skip.
+    sourceTerminator = builder.CreateCondBr(cond, entryBlock, skipBlock);
+  } else {
+    // No if clause: unconditional branch into the region.
+    sourceTerminator = builder.CreateBr(entryBlock);
+  }
+
+  // Emit data_begin inside the entry block for an if clause.
+  if (op.getIfCond()) {
+    builder.SetInsertPoint(entryBlock, entryBlock->getFirstInsertionPt());
+    emitAccDataCall(builder, beginMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
+                    argNumVal, argsBasePtr, argsPtr, argSizesPtr,
+                    maptypesArg, mapnamesArg, asyncArg);
+  }
 
   builder.restoreIP(afterDataRegion);
   llvm::BasicBlock *endDataBlock = llvm::BasicBlock::Create(
@@ -1705,8 +1738,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   for (Block *bb : blocks) {
     llvm::BasicBlock *llvmBB = moduleTranslation.lookupBlock(bb);
     if (bb->isEntryBlock()) {
-      assert(sourceTerminator->getNumSuccessors() == 1 &&
-             "provided entry block has multiple successors");
+      // An if-clause terminator has two successors; otherwise it has one.
       sourceTerminator->setSuccessor(0, llvmBB);
     }
 
@@ -1726,6 +1758,23 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   emitAccDataCall(builder, endMapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
                   argNumVal, argsBasePtr, argsPtr, argSizesPtr,
                   endMaptypesArg, mapnamesArg, asyncArg);
+
+  // Merge the data and skip paths after an if clause.
+  if (skipBlock) {
+    llvm::BasicBlock *continueBlock = llvm::BasicBlock::Create(
+        ctx, "acc.data.continue", endDataBlock->getParent());
+
+    // End-of-data path jumps to the continuation.
+    builder.SetInsertPoint(endDataBlock);
+    builder.CreateBr(continueBlock);
+
+    // Skip path jumps to the continuation.
+    builder.SetInsertPoint(skipBlock);
+    builder.CreateBr(continueBlock);
+
+    // Continue subsequent code generation from the merged block.
+    builder.SetInsertPoint(continueBlock);
+  }
 
   return success();
 }
