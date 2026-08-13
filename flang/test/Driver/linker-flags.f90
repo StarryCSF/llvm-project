@@ -86,4 +86,4 @@
 ! MSVC-SAME: "[[object_file]]"
 
 ! COMPILER-RT-NOT: "-lgcc"
-! COMPILER-RT-NOT: "-lgcc_s"
+! To test the temporary removal

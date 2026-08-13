@@ -111,19 +111,63 @@ static llvm::Function *getAccWaitFunction(llvm::Module &module,
           .getCallee());
 }
 
+/// Get or create __tgt_acc_data_begin function declaration.
+static llvm::Function *getAccDataBeginFunction(llvm::Module &module,
+                                               llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction("__tgt_acc_data_begin",
+                               llvm::FunctionType::get(
+                                   llvm::Type::getVoidTy(ctx),
+                                   {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy,
+                                    ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+                                   false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_end function declaration.
+static llvm::Function *getAccDataEndFunction(llvm::Module &module,
+                                             llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction("__tgt_acc_data_end",
+                               llvm::FunctionType::get(
+                                   llvm::Type::getVoidTy(ctx),
+                                   {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy,
+                                    ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+                                   false))
+          .getCallee());
+}
+
 //===----------------------------------------------------------------------===//
 // Utility functions
 //===----------------------------------------------------------------------===//
-
-/// Flag values are extracted from openmp/libomptarget/include/omptarget.h and
-/// mapped to corresponding OpenACC flags.
-static constexpr uint64_t kCreateFlag = 0x000;
-static constexpr uint64_t kDeviceCopyinFlag = 0x001;
-static constexpr uint64_t kHostCopyoutFlag = 0x002;
-static constexpr uint64_t kPresentFlag = 0x1000;
-static constexpr uint64_t kDeleteFlag = 0x008;
-// Runtime extension to implement the OpenACC second reference counter.
-static constexpr uint64_t kHoldFlag = 0x2000;
+/// ACC runtime specific flags from Interface.h TGT_ACC_MAPTYPE enum.
+static constexpr uint64_t kAccMapTypeNone = 0x0;            // TGT_ACC_MAPTYPE_NONE
+static constexpr uint64_t kAccMapTypeTo = 0x1;              // TGT_ACC_MAPTYPE_TO
+static constexpr uint64_t kAccMapTypeFrom = 0x2;            // TGT_ACC_MAPTYPE_FROM
+static constexpr uint64_t kAccMapTypeFinalize = 0x8;        // TGT_ACC_MAPTYPE_FINALIZE
+static constexpr uint64_t kAccMapTypePtrAndObj = 0x10;      // TGT_ACC_MAPTYPE_PTR_AND_OBJ
+static constexpr uint64_t kAccMapTypePrivate = 0x80;        // TGT_ACC_MAPTYPE_PRIVATE
+static constexpr uint64_t kAccMapTypeLiteral = 0x100;       // TGT_ACC_MAPTYPE_LITERAL
+static constexpr uint64_t kAccMapTypeDevPtr = 0x400;        // TGT_ACC_MAPTYPE_DEVPTR
+static constexpr uint64_t kAccMapTypeManagedDevPtr = 0x800; // TGT_ACC_MAPTYPE_MANAGED_DEVPTR
+static constexpr uint64_t kAccMapTypeNoCreate = 0x2000;     // TGT_ACC_MAPTYPE_NO_CREATE
+static constexpr uint64_t kAccMapTypeGangPrivate = 0x4000;     // TGT_ACC_MAPTYPE_GANG_PRIVATE
+static constexpr uint64_t kAccMapTypeWorkerPrivate = 0x8000;   // TGT_ACC_MAPTYPE_WORKER_PRIVATE
+static constexpr uint64_t kAccMapTypeVectorPrivate = 0x10000;  // TGT_ACC_MAPTYPE_VECTOR_PRIVATE
+static constexpr uint64_t kAccMapTypeInitZero = 0x20000;       // TGT_ACC_MAPTYPE_INIT_ZERO
+static constexpr uint64_t kAccMapTypeDeviceResident = 0x40000; // TGT_ACC_MAPTYPE_DEVICE_RESIDENT
+static constexpr uint64_t kAccMapTypeIfPresent = 0x80000;      // TGT_ACC_MAPTYPE_IF_PRESENT
+static constexpr uint64_t kAccMapTypePresent = 0x100000;    // TGT_ACC_MAPTYPE_PRESENT
 
 /// Default value for the device id
 static constexpr int64_t kDefaultDevice = -1;
@@ -157,6 +201,231 @@ static llvm::Function *getAssociatedFunction(OpenACCIRBuilder &builder,
             llvm::omp::OMPRTL___tgt_target_data_update_mapper);
       });
   llvm_unreachable("Unknown OpenACC operation");
+}
+
+/// Process a data entry operation with bounds support.
+/// Extracts pointer, size, and bounds information from the operation.
+static LogicalResult
+processDataOperandWithBounds(llvm::IRBuilderBase &builder,
+                              LLVM::ModuleTranslation &moduleTranslation,
+                              Operation *dataOp, mlir::Value varPtr,
+                              unsigned totalNbOperand, uint64_t operandFlag,
+                              SmallVector<uint64_t> &flags,
+                              SmallVectorImpl<llvm::Constant *> &names,
+                              unsigned &index,
+                              struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::LLVMContext &ctx = builder.getContext();
+  auto *i8PtrTy = llvm::PointerType::getUnqual(ctx);
+  auto *arrI8PtrTy = llvm::ArrayType::get(i8PtrTy, totalNbOperand);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *arrI64Ty = llvm::ArrayType::get(i64Ty, totalNbOperand);
+
+  llvm::Value *dataValue = moduleTranslation.lookupValue(varPtr);
+
+  llvm::Value *dataPtrBase = dataValue;
+  llvm::Value *dataPtr = dataValue;
+  llvm::Value *dataSize = accBuilder->getSizeInBytes(dataValue);
+
+  // Retrieve bounds and the mapped variable type from the data entry.
+  mlir::ValueRange bounds;
+  mlir::Type varType;
+
+  if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(dataOp)) {
+    bounds = copyinOp.getBounds();
+    varType = copyinOp.getVarType();
+  } else if (auto createOp = mlir::dyn_cast_or_null<acc::CreateOp>(dataOp)) {
+    bounds = createOp.getBounds();
+    varType = createOp.getVarType();
+  } else if (auto presentOp = mlir::dyn_cast_or_null<acc::PresentOp>(dataOp)) {
+    bounds = presentOp.getBounds();
+    varType = presentOp.getVarType();
+  } else if (auto noCreateOp = mlir::dyn_cast_or_null<acc::NoCreateOp>(dataOp)) {
+    bounds = noCreateOp.getBounds();
+    varType = noCreateOp.getVarType();
+  } else if (auto deviceptrOp = mlir::dyn_cast_or_null<acc::DevicePtrOp>(dataOp)) {
+    bounds = deviceptrOp.getBounds();
+    varType = deviceptrOp.getVarType();
+  } else if (auto attachOp = mlir::dyn_cast_or_null<acc::AttachOp>(dataOp)) {
+    bounds = attachOp.getBounds();
+    varType = attachOp.getVarType();
+  }
+
+  if (varType && isa<IntegerType, FloatType>(varType))
+    operandFlag &= ~kAccMapTypePtrAndObj;
+
+  // If bounds are present, compute the byte offset of the slice inside the
+  // mapped object and the size of the slice in bytes.
+  //
+  // Per the OpenACC dialect documentation the bounds are zero-normalized and
+  // given in rank order (rank 0 is the inner-most dimension and comes first):
+  //   * a `lowerbound` of 0 means looking at data at the zero offset from the
+  //     pointer,
+  //   * when present, `upperbound` determines the number of mapped elements
+  //     with `extent = upperbound - lowerbound + 1`; otherwise `extent`
+  //     supplies that value,
+  //   * the `stride` holds the distance, in units of the element or in bytes
+  //     when `strideInBytes` is set, between two consecutive occurrences; for
+  //     multidimensional arrays the stride of each outer dimension accounts
+  //     for the complete size of all inner dimensions.
+  //
+  // The runtime receives either a non-null base pointer for PTR_AND_OBJ
+  // mappings, or a null base pointer and the first slice element for an
+  // ordinary bounded memory range. ArgSizes is the byte span from the first
+  // to the last selected element:
+  //     offset = sum over dims of (lowerbound * stride-in-bytes)
+  //     span   = element-size-in-bytes
+  //            + sum over dims of ((extent - 1) * stride-in-bytes)
+  if (!bounds.empty()) {
+    // A bounded array section is passed to the runtime as an ordinary memory
+    // range. PTR_AND_OBJ is reserved for mappings that attach a pointer field
+    // inside a parent object; using it for an array section would make the
+    // runtime interpret the first bytes of the section as a pointer.
+    operandFlag &= ~kAccMapTypePtrAndObj;
+
+    // The `varType` of the data clause describes the type of the variable
+    // being copied (i.e. the target pointed to by `varPtr`). Strip any array
+    // wrappers to get the innermost element type and use the LLVM data layout
+    // to get its byte size so element counts and strides can be turned into
+    // byte offsets and spans.
+    const llvm::DataLayout &dataLayout =
+        moduleTranslation.getLLVMModule()->getDataLayout();
+    llvm::Type *elemTy = moduleTranslation.convertType(varType);
+    while (elemTy && llvm::isa<llvm::ArrayType>(elemTy))
+      elemTy = llvm::cast<llvm::ArrayType>(elemTy)->getElementType();
+    uint64_t elemByteSize = 1;
+    if (elemTy && elemTy->isSized()) {
+      llvm::TypeSize typeSize = dataLayout.getTypeAllocSize(elemTy);
+      if (!typeSize.isScalable())
+        elemByteSize = typeSize.getFixedValue();
+    }
+
+    llvm::Value *sliceOffset = builder.getInt64(0);
+    llvm::Value *sliceSize = builder.getInt64(elemByteSize);
+
+    for (mlir::Value boundVal : bounds) {
+      auto boundsOp = boundVal.getDefiningOp<acc::DataBoundsOp>();
+      if (!boundsOp) {
+        dataOp->emitOpError()
+            << "bounds operand is not defined by an `acc.bounds` operation";
+        return failure();
+      }
+
+      // Lower bound of the dimension, defaults to 0 (bounds are zero
+      // normalized).
+      llvm::Value *lb = builder.getInt64(0);
+      if (boundsOp.getLowerbound()) {
+        llvm::Value *lbVal =
+            moduleTranslation.lookupValue(boundsOp.getLowerbound());
+        if (!lbVal) {
+          dataOp->emitOpError("could not find LLVM value for lower bound");
+          return failure();
+        }
+        if (!lbVal->getType()->isIntegerTy(64))
+          lbVal = builder.CreateIntCast(lbVal, builder.getInt64Ty(), true);
+        lb = lbVal;
+      }
+
+      // Number of elements mapped along this dimension, i.e. the extent of
+      // the selected slice. This is derived from the upper bound with
+      // extent = upperbound - lowerbound + 1 whenever the upper bound is
+      // present: an `extent` operand supplied alongside it may carry the
+      // total extent of the source array rather than the slice, so it only
+      // serves as a fallback when no upper bound is available.
+      llvm::Value *extent = nullptr;
+      if (boundsOp.getUpperbound()) {
+        llvm::Value *ubVal =
+            moduleTranslation.lookupValue(boundsOp.getUpperbound());
+        if (!ubVal) {
+          dataOp->emitOpError("could not find LLVM value for upper bound");
+          return failure();
+        }
+        if (!ubVal->getType()->isIntegerTy(64))
+          ubVal = builder.CreateIntCast(ubVal, builder.getInt64Ty(), true);
+        extent = builder.CreateAdd(builder.CreateSub(ubVal, lb),
+                                   builder.getInt64(1));
+      } else if (boundsOp.getExtent()) {
+        extent = moduleTranslation.lookupValue(boundsOp.getExtent());
+        if (!extent) {
+          dataOp->emitOpError("could not find LLVM value for extent");
+          return failure();
+        }
+      } else {
+        dataOp->emitOpError()
+            << "`acc.bounds` must specify an `extent` or an `upperbound`";
+        return failure();
+      }
+      if (!extent->getType()->isIntegerTy(64))
+        extent = builder.CreateIntCast(extent, builder.getInt64Ty(), true);
+
+      // Stride between two consecutive elements, defaults to 1. Strides are
+      // given in units of the element unless `strideInBytes` is set, in
+      // which case they are scaled by the element size below.
+      llvm::Value *stride = builder.getInt64(1);
+      if (boundsOp.getStride()) {
+        llvm::Value *strideVal =
+            moduleTranslation.lookupValue(boundsOp.getStride());
+        if (!strideVal) {
+          dataOp->emitOpError("could not find LLVM value for stride");
+          return failure();
+        }
+        if (!strideVal->getType()->isIntegerTy(64))
+          strideVal = builder.CreateIntCast(strideVal, builder.getInt64Ty(),
+                                            true);
+        stride = strideVal;
+      }
+      if (!boundsOp.getStrideInBytes())
+        stride = builder.CreateMul(stride, builder.getInt64(elemByteSize));
+
+      // Accumulate the byte offset contributed by this dimension and the byte
+      // span through the last selected element.
+      sliceOffset =
+          builder.CreateAdd(sliceOffset, builder.CreateMul(lb, stride));
+      sliceSize = builder.CreateAdd(
+          sliceSize, builder.CreateMul(
+                         builder.CreateSub(extent, builder.getInt64(1)),
+                         stride));
+    }
+
+    // Point at the first element of the slice and use its computed span.
+    dataPtr = builder.CreateInBoundsGEP(llvm::Type::getInt8Ty(ctx),
+                                        dataPtrBase, sliceOffset);
+    dataSize = sliceSize;
+  }
+
+  // Store base pointer. The runtime (accTargetDataBegin/accTargetDataEnd)
+  // requires ArgBasePtr to be non-null if and only if the entry carries
+  // PTR_AND_OBJ. Bounded array sections are mapped as ordinary contiguous
+  // memory ranges with PTR_AND_OBJ stripped, so their base pointer is null:
+  // the runtime then treats ArgPtr as both the base and the first byte of
+  // the mapped range.
+  llvm::Value *basePtr = (operandFlag & kAccMapTypePtrAndObj)
+                             ? dataPtrBase
+                             : llvm::ConstantPointerNull::get(i8PtrTy);
+  llvm::Value *ptrBaseGEP = builder.CreateInBoundsGEP(
+      arrI8PtrTy, mapperAllocas.ArgsBase,
+      {builder.getInt32(0), builder.getInt32(index)});
+  builder.CreateStore(basePtr, ptrBaseGEP);
+
+  // Store pointer
+  llvm::Value *ptrGEP = builder.CreateInBoundsGEP(
+      arrI8PtrTy, mapperAllocas.Args,
+      {builder.getInt32(0), builder.getInt32(index)});
+  builder.CreateStore(dataPtr, ptrGEP);
+
+  // Store size
+  llvm::Value *sizeGEP = builder.CreateInBoundsGEP(
+      arrI64Ty, mapperAllocas.ArgSizes,
+      {builder.getInt32(0), builder.getInt32(index)});
+  builder.CreateStore(dataSize, sizeGEP);
+
+  flags.push_back(operandFlag);
+  llvm::Constant *mapName =
+      mlir::LLVM::createMappingInformation(varPtr.getLoc(), *accBuilder);
+  names.push_back(mapName);
+  ++index;
+
+  return success();
 }
 
 /// Extract pointer, size and mapping information from operands
@@ -220,6 +489,61 @@ processOperands(llvm::IRBuilderBase &builder,
   return success();
 }
 
+/// Return the first element of a bounded data entry so later operations use
+/// the same host mapping key as the data-begin call.
+static llvm::Value *
+getBoundedMappingPointer(Operation *entry, llvm::Value *dataValue,
+                         LLVM::ModuleTranslation &moduleTranslation,
+                         llvm::IRBuilderBase &builder) {
+  ValueRange bounds = acc::getBounds(entry);
+  if (bounds.empty())
+    return dataValue;
+
+  mlir::Type varType;
+  TypeSwitch<Operation *>(entry)
+      .Case<acc::CopyinOp, acc::CreateOp, acc::CopyoutOp, acc::PresentOp,
+            acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp>(
+          [&](auto op) { varType = op.getVarType(); });
+  llvm::Type *elementType =
+      varType ? moduleTranslation.convertType(varType) : nullptr;
+  if (!elementType)
+    return dataValue;
+  while (auto *arrayType = llvm::dyn_cast<llvm::ArrayType>(elementType))
+    elementType = arrayType->getElementType();
+  if (!elementType->isSized())
+    return dataValue;
+
+  llvm::TypeSize elementSize =
+      moduleTranslation.getLLVMModule()->getDataLayout().getTypeAllocSize(
+          elementType);
+  if (elementSize.isScalable())
+    return dataValue;
+
+  llvm::Value *offset = builder.getInt64(0);
+  auto getBoundValue = [&](Value value, int64_t defaultValue) -> llvm::Value * {
+    if (!value)
+      return builder.getInt64(defaultValue);
+    llvm::Value *result = moduleTranslation.lookupValue(value);
+    if (!result)
+      return builder.getInt64(defaultValue);
+    if (!result->getType()->isIntegerTy(64))
+      result = builder.CreateIntCast(result, builder.getInt64Ty(), true);
+    return result;
+  };
+  for (Value bound : bounds) {
+    auto boundsOp = bound.getDefiningOp<acc::DataBoundsOp>();
+    if (!boundsOp)
+      return dataValue;
+    llvm::Value *lower = getBoundValue(boundsOp.getLowerbound(), 0);
+    llvm::Value *stride = getBoundValue(boundsOp.getStride(), 1);
+    if (!boundsOp.getStrideInBytes())
+      stride = builder.CreateMul(stride,
+                                 builder.getInt64(elementSize.getFixedValue()));
+    offset = builder.CreateAdd(offset, builder.CreateMul(lower, stride));
+  }
+  return builder.CreateGEP(builder.getInt8Ty(), dataValue, {offset});
+}
+
 /// Process data operands from acc::EnterDataOp
 static LogicalResult
 processDataOperands(llvm::IRBuilderBase &builder,
@@ -247,13 +571,13 @@ processDataOperands(llvm::IRBuilderBase &builder,
 
   // Create operands are handled as `alloc` call.
   if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kCreateFlag, flags, names, index,
-                             mapperAllocas)))
+                             nbTotalOperands, kAccMapTypeNone, flags, names,
+                             index, mapperAllocas)))
     return failure();
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag, flags, names,
+                             nbTotalOperands, kAccMapTypeTo, flags, names,
                              index, mapperAllocas)))
     return failure();
 
@@ -288,13 +612,13 @@ processDataOperands(llvm::IRBuilderBase &builder,
 
   // Delete operands are handled as `delete` call.
   if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kDeleteFlag, flags, names, index,
+                             nbTotalOperands, kAccMapTypeFinalize, flags, names, index,
                              mapperAllocas)))
     return failure();
 
   // Copyout operands are handled as `from` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyoutOperands,
-                             nbTotalOperands, kHostCopyoutFlag, flags, names,
+                             nbTotalOperands, kAccMapTypeFrom, flags, names,
                              index, mapperAllocas)))
     return failure();
 
@@ -325,12 +649,12 @@ processDataOperands(llvm::IRBuilderBase &builder,
   }
 
   if (failed(processOperands(builder, moduleTranslation, op, from, from.size(),
-                             kHostCopyoutFlag, flags, names, index,
+                             kAccMapTypeFrom, flags, names, index,
                              mapperAllocas)))
     return failure();
 
   if (failed(processOperands(builder, moduleTranslation, op, to, to.size(),
-                             kDeviceCopyinFlag, flags, names, index,
+                             kAccMapTypeTo, flags, names, index,
                              mapperAllocas)))
     return failure();
   return success();
@@ -353,11 +677,9 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   llvm::Value *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
 
-  llvm::Function *beginMapperFunc = accBuilder->getOrCreateRuntimeFunctionPtr(
-      llvm::omp::OMPRTL___tgt_target_data_begin_mapper);
-
-  llvm::Function *endMapperFunc = accBuilder->getOrCreateRuntimeFunctionPtr(
-      llvm::omp::OMPRTL___tgt_target_data_end_mapper);
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::Function *beginMapperFunc = getAccDataBeginFunction(*module, ctx);
+  llvm::Function *endMapperFunc = getAccDataEndFunction(*module, ctx);
 
   // Number of arguments in the data operation.
   unsigned totalNbOperand = op.getNumDataOperands();
@@ -373,69 +695,184 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   SmallVector<llvm::Constant *> names;
   unsigned index = 0;
 
-  // TODO handle no_create, deviceptr and attach operands.
+  // Keep each data entry paired with its variable pointer for bounds lowering.
+  struct DataOpInfo {
+    Operation *op;
+    mlir::Value varPtr;
+  };
 
-  llvm::SmallVector<mlir::Value> copyin, copyout, create, present,
-      deleteOperands;
+  llvm::SmallVector<DataOpInfo> copyinOps, copyoutOps, createOps, presentOps,
+      deleteOps, copyOps, noCreateOps, devicePtrOps, attachOps;
+
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
-    if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
-            dataOp.getDefiningOp())) {
-      for (auto &u : devicePtrOp.getAccPtr().getUses()) {
-        if (mlir::dyn_cast_or_null<acc::DeleteOp>(u.getOwner())) {
-          deleteOperands.push_back(devicePtrOp.getVarPtr());
-        } else if (mlir::dyn_cast_or_null<acc::CopyoutOp>(u.getOwner())) {
-          // TODO copyout zero currenlty handled as copyout. Update when
-          // extension available.
-          copyout.push_back(devicePtrOp.getVarPtr());
-        }
-      }
+    if (mlir::isa<acc::GetDevicePtrOp>(dataOp.getDefiningOp())) {
+      return op.emitError()
+             << "acc.getdeviceptr is not a data entry for acc.data; "
+                "use acc.deviceptr for a deviceptr data clause";
     } else if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(
                    dataOp.getDefiningOp())) {
-      // TODO copyin readonly currenlty handled as copyin. Update when extension
-      // available.
-      copyin.push_back(copyinOp.getVarPtr());
+      if (copyinOp.getDataClause() == acc::DataClause::acc_copy)
+        copyOps.push_back({copyinOp, copyinOp.getVarPtr()});
+      else
+        copyinOps.push_back({copyinOp, copyinOp.getVarPtr()});
     } else if (auto createOp = mlir::dyn_cast_or_null<acc::CreateOp>(
                    dataOp.getDefiningOp())) {
-      // TODO create zero currenlty handled as create. Update when extension
-      // available.
-      create.push_back(createOp.getVarPtr());
+      if (createOp.getDataClause() == acc::DataClause::acc_copyout) {
+        copyoutOps.push_back({createOp, createOp.getVarPtr()});
+      } else {
+        createOps.push_back({createOp, createOp.getVarPtr()});
+      }
     } else if (auto presentOp = mlir::dyn_cast_or_null<acc::PresentOp>(
                    dataOp.getDefiningOp())) {
-      present.push_back(presentOp.getVarPtr());
+      presentOps.push_back({presentOp, presentOp.getVarPtr()});
+    } else if (auto noCreateOp = mlir::dyn_cast_or_null<acc::NoCreateOp>(
+                   dataOp.getDefiningOp())) {
+      noCreateOps.push_back({noCreateOp, noCreateOp.getVarPtr()});
+    } else if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::DevicePtrOp>(
+                   dataOp.getDefiningOp())) {
+      devicePtrOps.push_back({devicePtrOp, devicePtrOp.getVarPtr()});
+    } else if (auto attachOp = mlir::dyn_cast_or_null<acc::AttachOp>(
+                   dataOp.getDefiningOp())) {
+      attachOps.push_back({attachOp, attachOp.getVarPtr()});
+    } else {
+      return op.emitError() << "unsupported acc.data operand: "
+                            << dataOp.getDefiningOp()->getName();
     }
   }
 
-  auto nbTotalOperands = copyin.size() + copyout.size() + create.size() +
-                         present.size() + deleteOperands.size();
+  // Process each data operation with bounds support
+  for (auto &info : copyinOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypeTo | kAccMapTypePtrAndObj, flags, names, index,
+            mapperAllocas)))
+      return failure();
+  }
 
-  // Copyin operands are handled as `to` call.
-  if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kHoldFlag,
-                             flags, names, index, mapperAllocas)))
-    return failure();
+  for (auto &info : deleteOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypeFinalize, flags, names, index, mapperAllocas)))
+      return failure();
+  }
 
-  // Delete operands are handled as `delete` call.
-  if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kDeleteFlag, flags, names, index,
-                             mapperAllocas)))
-    return failure();
+  for (auto &info : copyoutOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypePtrAndObj, flags, names, index, mapperAllocas)))
+      return failure();
+  }
 
-  // Copyout operands are handled as `from` call.
-  if (failed(processOperands(builder, moduleTranslation, op, copyout,
-                             nbTotalOperands, kHostCopyoutFlag | kHoldFlag,
-                             flags, names, index, mapperAllocas)))
-    return failure();
+  for (auto &info : createOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypePtrAndObj, flags, names, index, mapperAllocas)))
+      return failure();
+  }
 
-  // Create operands are handled as `alloc` call.
-  if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kCreateFlag | kHoldFlag, flags,
-                             names, index, mapperAllocas)))
-    return failure();
+  for (auto &info : presentOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypePresent | kAccMapTypeNoCreate, flags, names, index,
+            mapperAllocas)))
+      return failure();
+  }
 
-  if (failed(processOperands(builder, moduleTranslation, op, present,
-                             nbTotalOperands, kPresentFlag | kHoldFlag, flags,
-                             names, index, mapperAllocas)))
-    return failure();
+  for (auto &info : copyOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypeTo | kAccMapTypePtrAndObj, flags, names, index,
+            mapperAllocas)))
+      return failure();
+  }
+
+  for (auto &info : noCreateOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypeNoCreate | kAccMapTypePtrAndObj, flags, names, index,
+            mapperAllocas)))
+      return failure();
+  }
+
+  for (auto &info : devicePtrOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypeDevPtr | kAccMapTypePtrAndObj, flags, names, index,
+            mapperAllocas)))
+      return failure();
+  }
+
+  for (auto &info : attachOps) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, info.op, info.varPtr, totalNbOperand,
+            kAccMapTypePtrAndObj, flags, names, index, mapperAllocas)))
+      return failure();
+  }
+
+  assert(index == totalNbOperand &&
+         "all acc.data operands must be classified and processed");
+
+  // Generate end flags for data_end call
+  // According to OpenACC MLIR dialect decomposition:
+  // - copyin: acc.copyin (entry) -> acc.delete (exit)
+  // - copy: acc.copyin (entry) -> acc.copyout (exit)
+  // - copyout: acc.create (entry) -> acc.copyout (exit)
+  // - create: acc.create (entry) -> acc.delete (exit)
+  // - present: acc.present (entry) -> acc.delete (exit)
+  // - no_create: acc.nocreate (entry) -> acc.delete (exit)
+  // - attach: acc.attach (entry) -> acc.detach (exit)
+  SmallVector<uint64_t> endFlags;
+
+  // copyin: entry TO|PTR_AND_OBJ, exit FINALIZE (acc.delete)
+  for (size_t i = 0; i < copyinOps.size(); ++i)
+    endFlags.push_back(kAccMapTypeFinalize);
+
+  // delete: entry FINALIZE, exit FINALIZE
+  for (size_t i = 0; i < deleteOps.size(); ++i)
+    endFlags.push_back(kAccMapTypeFinalize);
+
+  // copyout: entry PTR_AND_OBJ, exit FROM|PTR_AND_OBJ (acc.copyout).
+  // Bounded sections strip PTR_AND_OBJ so ArgBasePtr stays null at the end.
+  for (auto &info : copyoutOps) {
+    uint64_t endFlag = kAccMapTypeFrom | kAccMapTypePtrAndObj;
+    if (!acc::getBounds(info.op).empty())
+      endFlag &= ~kAccMapTypePtrAndObj;
+    endFlags.push_back(endFlag);
+  }
+
+  // create: entry PTR_AND_OBJ, exit FINALIZE (acc.delete)
+  for (size_t i = 0; i < createOps.size(); ++i)
+    endFlags.push_back(kAccMapTypeFinalize);
+
+  // present: entry PRESENT|NO_CREATE, exit PRESENT|NO_CREATE.
+  for (size_t i = 0; i < presentOps.size(); ++i)
+    endFlags.push_back(kAccMapTypePresent | kAccMapTypeNoCreate);
+
+  // copy: entry TO|PTR_AND_OBJ, exit FROM|PTR_AND_OBJ (acc.copyout).
+  // Bounded sections strip PTR_AND_OBJ so ArgBasePtr stays null at the end.
+  for (auto &info : copyOps) {
+    uint64_t endFlag = kAccMapTypeFrom | kAccMapTypePtrAndObj;
+    if (!acc::getBounds(info.op).empty())
+      endFlag &= ~kAccMapTypePtrAndObj;
+    endFlags.push_back(endFlag);
+  }
+
+  // no_create: entry NO_CREATE|PTR_AND_OBJ, exit FINALIZE (acc.delete)
+  for (size_t i = 0; i < noCreateOps.size(); ++i)
+    endFlags.push_back(kAccMapTypeFinalize);
+
+  // deviceptr: entry DEVPTR|PTR_AND_OBJ, no exit operation
+  for (size_t i = 0; i < devicePtrOps.size(); ++i)
+    endFlags.push_back(kAccMapTypeDevPtr | kAccMapTypePtrAndObj);
+
+  // attach: entry PTR_AND_OBJ, exit FINALIZE|PTR_AND_OBJ (acc.detach).
+  // Bounded sections strip PTR_AND_OBJ so ArgBasePtr stays null at the end.
+  for (auto &info : attachOps) {
+    uint64_t endFlag = kAccMapTypeFinalize | kAccMapTypePtrAndObj;
+    if (!acc::getBounds(info.op).empty())
+      endFlag &= ~kAccMapTypePtrAndObj;
+    endFlags.push_back(endFlag);
+  }
 
   llvm::GlobalVariable *maptypes =
       accBuilder->createOffloadMaptypes(flags, ".offload_maptypes");
@@ -443,16 +880,94 @@ static LogicalResult convertDataOp(acc::DataOp &op,
       llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), totalNbOperand),
       maptypes, /*Idx0=*/0, /*Idx1=*/0);
 
+  llvm::GlobalVariable *endMaptypes =
+      accBuilder->createOffloadMaptypes(endFlags, ".offload_maptypes_end");
+  llvm::Value *endMaptypesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), totalNbOperand),
+      endMaptypes, /*Idx0=*/0, /*Idx1=*/0);
+
   llvm::GlobalVariable *mapnames =
       accBuilder->createOffloadMapnames(names, ".offload_mapnames");
   llvm::Value *mapnamesArg = builder.CreateConstInBoundsGEP2_32(
       llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), totalNbOperand),
       mapnames, /*Idx0=*/0, /*Idx1=*/0);
 
-  // Create call to start the data region.
-  accBuilder->emitMapperCall(builder.saveIP(), beginMapperFunc, srcLocInfo,
-                             maptypesArg, mapnamesArg, mapperAllocas,
-                             kDefaultDevice, totalNbOperand);
+  // Prepare arguments for ACC runtime calls.
+  auto *nullPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+
+  // The data construct defaults to acc_device_none (all device types).
+  llvm::Value *deviceType = builder.getInt64(0);
+
+  // TODO: Lower the default clause into the runtime flags parameter.
+  llvm::Value *flagsVal = builder.getInt64(0);
+
+  // Handle async clause.
+  // -1 = sync, -2 = async-only, >= 0 = async queue id
+  llvm::Value *asyncVal = builder.getInt64(-1);
+  if (op.getAsyncValue()) {
+    llvm::Value *asyncValue = moduleTranslation.lookupValue(op.getAsyncValue());
+    if (asyncValue) {
+      if (!asyncValue->getType()->isIntegerTy(64))
+        asyncValue = builder.CreateIntCast(asyncValue, builder.getInt64Ty(), true);
+      asyncVal = asyncValue;
+    }
+  } else if (op.hasAsyncOnly()) {
+    asyncVal = builder.getInt64(-2);
+  }
+
+  // Emit a wait call before data_begin when the clause is present.
+  if (!op.getWaitValues().empty() || op.hasWaitOnly()) {
+    uint32_t waitNum = op.getWaitValues().size();
+    llvm::Value *waitList = nullPtr;
+    if (waitNum != 0) {
+      auto *arrayType = llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), waitNum);
+      waitList = builder.CreateAlloca(arrayType);
+      for (uint32_t i = 0; i < waitNum; ++i) {
+        llvm::Value *waitValue =
+            moduleTranslation.lookupValue(op.getWaitValues()[i]);
+        if (!waitValue) {
+          op.emitError("could not find LLVM value for wait operand") << i;
+          return failure();
+        }
+        if (waitValue->getType() != llvm::Type::getInt64Ty(ctx))
+          waitValue = builder.CreateIntCast(waitValue, llvm::Type::getInt64Ty(ctx), true);
+        llvm::Value *element = builder.CreateInBoundsGEP(
+            arrayType, waitList, {builder.getInt32(0), builder.getInt32(i)});
+        builder.CreateStore(waitValue, element);
+      }
+    }
+    llvm::Value *waitDevnum = builder.getInt32(-1);
+    if (op.getWaitDevnum()) {
+      llvm::Value *devnum = moduleTranslation.lookupValue(op.getWaitDevnum());
+      if (devnum) {
+        if (devnum->getType() != llvm::Type::getInt32Ty(ctx))
+          devnum = builder.CreateIntCast(devnum, llvm::Type::getInt32Ty(ctx), true);
+        waitDevnum = devnum;
+      }
+    }
+    builder.CreateCall(getAccWaitFunction(*module, ctx),
+        {srcLocInfo, builder.getInt64(0), deviceType, waitDevnum,
+         builder.getInt32(waitNum), waitList, asyncVal});
+  }
+
+  // An if-clause data_begin belongs in the taken entry block.
+  if (!op.getIfCond()) {
+    // No if clause: call directly.
+    builder.CreateCall(beginMapperFunc,
+        {srcLocInfo, flagsVal, deviceType, builder.getInt32(totalNbOperand),
+         mapperAllocas.ArgsBase, mapperAllocas.Args, mapperAllocas.ArgSizes,
+         maptypesArg, mapnamesArg, nullPtr, nullPtr, asyncVal});
+  }
+
+  // Materialize the optional if condition.
+  llvm::Value *cond = nullptr;
+  if (op.getIfCond()) {
+    cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+  }
 
   // Convert the region.
   llvm::BasicBlock *entryBlock = nullptr;
@@ -467,7 +982,31 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   auto afterDataRegion = builder.saveIP();
 
-  llvm::UncondBrInst *sourceTerminator = builder.CreateBr(entryBlock);
+  llvm::BasicBlock *endBlock = nullptr;
+  llvm::Instruction *sourceTerminator;
+
+  if (cond) {
+    // Create a block for skipping the data region.
+    endBlock = llvm::BasicBlock::Create(ctx, "acc.data.skip",
+                                        builder.GetInsertBlock()->getParent());
+    // Create a conditional branch.
+    sourceTerminator = builder.CreateCondBr(cond, entryBlock, endBlock);
+  } else {
+    // Create an unconditional branch.
+    sourceTerminator = builder.CreateBr(entryBlock);
+  }
+
+  // Emit data_begin inside the entry block for an if clause.
+  if (op.getIfCond()) {
+    // Set the insertion point to the entry block.
+    builder.SetInsertPoint(entryBlock, entryBlock->getFirstInsertionPt());
+    // Call data_begin.
+    builder.CreateCall(
+        beginMapperFunc,
+        {srcLocInfo, flagsVal, deviceType, builder.getInt32(totalNbOperand),
+         mapperAllocas.ArgsBase, mapperAllocas.Args, mapperAllocas.ArgSizes,
+         maptypesArg, mapnamesArg, nullPtr, nullPtr, asyncVal});
+  }
 
   builder.restoreIP(afterDataRegion);
   llvm::BasicBlock *endDataBlock = llvm::BasicBlock::Create(
@@ -476,11 +1015,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   SetVector<Block *> blocks = getBlocksSortedByDominance(op.getRegion());
   for (Block *bb : blocks) {
     llvm::BasicBlock *llvmBB = moduleTranslation.lookupBlock(bb);
-    if (bb->isEntryBlock()) {
-      assert(sourceTerminator->getNumSuccessors() == 1 &&
-             "provided entry block has multiple successors");
+    if (bb->isEntryBlock())
       sourceTerminator->setSuccessor(0, llvmBB);
-    }
 
     if (failed(
             moduleTranslation.convertBlock(*bb, bb->isEntryBlock(), builder))) {
@@ -493,9 +1029,28 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // Create call to end the data region.
   builder.SetInsertPoint(endDataBlock);
-  accBuilder->emitMapperCall(builder.saveIP(), endMapperFunc, srcLocInfo,
-                             maptypesArg, mapnamesArg, mapperAllocas,
-                             kDefaultDevice, totalNbOperand);
+  builder.CreateCall(endMapperFunc,
+      {srcLocInfo, flagsVal, deviceType, builder.getInt32(totalNbOperand),
+       mapperAllocas.ArgsBase, mapperAllocas.Args, mapperAllocas.ArgSizes,
+       endMaptypesArg, mapnamesArg, nullPtr, nullPtr, asyncVal});
+
+  // Merge the data and skip paths after an if clause.
+  if (endBlock) {
+    // Create a continuation block after both paths converge.
+    llvm::BasicBlock *continueBlock = llvm::BasicBlock::Create(
+        ctx, "acc.data.continue", endDataBlock->getParent());
+
+    // End-of-data path jumps to the continuation.
+    builder.SetInsertPoint(endDataBlock);
+    builder.CreateBr(continueBlock);
+
+    // Skip path jumps to the continuation.
+    builder.SetInsertPoint(endBlock);
+    builder.CreateBr(continueBlock);
+
+    // Continue subsequent code generation from the merged block.
+    builder.SetInsertPoint(continueBlock);
+  }
 
   return success();
 }
@@ -943,12 +1498,21 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         moduleTranslation.mapValue(op.getResult(), result);
         return success();
       })
-      .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::DeleteOp,
-            acc::PresentOp,
-            acc::GetDevicePtrOp>([](auto op) {
-        // NOP
+      .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::PresentOp,
+            acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp>([&](auto op) {
+        llvm::Value *varPtr = moduleTranslation.lookupValue(op.getVarPtr());
+        if (!varPtr) {
+          op.emitError("could not find LLVM value for varPtr");
+          return failure();
+        }
+        varPtr = getBoundedMappingPointer(op.getOperation(), varPtr,
+                                          moduleTranslation, builder);
+        if (!moduleTranslation.lookupValue(op.getAccPtr()))
+          moduleTranslation.mapValue(op.getAccPtr(), varPtr);
         return success();
       })
+      .Case<acc::DeleteOp, acc::DetachOp, acc::GetDevicePtrOp>(
+          [](auto op) { return success(); })
       .Default([&](Operation *op) {
         return op->emitError("unsupported OpenACC operation: ")
                << op->getName();
