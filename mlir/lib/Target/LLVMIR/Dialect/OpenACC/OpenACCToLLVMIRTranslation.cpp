@@ -24,6 +24,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Frontend/OpenMP/OMPConstants.h"
 
+#include <type_traits>
+
 using namespace mlir;
 
 using OpenACCIRBuilder = llvm::OpenMPIRBuilder;
@@ -349,30 +351,24 @@ convertHostDataOp(acc::HostDataOp op, llvm::IRBuilderBase &builder,
 // Utility functions
 //===----------------------------------------------------------------------===//
 
-/// Values mirror the TGT_ACC_MAPTYPE enum in offload/libacctarget/Interface.h.
-/// Keep this translation layer independent of the acctarget headers, but do
-/// not invent bits: the values are part of the host/runtime ABI.
-static constexpr uint64_t kNoneFlag = 0x0;              // TGT_ACC_MAPTYPE_NONE
-static constexpr uint64_t kDeviceCopyinFlag = 0x1;     // TGT_ACC_MAPTYPE_TO
-static constexpr uint64_t kHostCopyoutFlag = 0x2;      // TGT_ACC_MAPTYPE_FROM
-static constexpr uint64_t kDeleteFlag = 0x8;            // TGT_ACC_MAPTYPE_FINALIZE
-static constexpr uint64_t kPtrAndObjFlag = 0x10;        // TGT_ACC_MAPTYPE_PTR_AND_OBJ
-static constexpr uint64_t kPrivateFlag = 0x80;          // TGT_ACC_MAPTYPE_PRIVATE
-static constexpr uint64_t kLiteralFlag = 0x100;        // TGT_ACC_MAPTYPE_LITERAL
-static constexpr uint64_t kDevicePtrFlag = 0x400;      // TGT_ACC_MAPTYPE_DEVPTR
-static constexpr uint64_t kManagedDevicePtrFlag = 0x800; // MANAGED_DEVPTR
-static constexpr uint64_t kNoCreateFlag = 0x2000;      // TGT_ACC_MAPTYPE_NO_CREATE
-static constexpr uint64_t kGangPrivateFlag = 0x4000;   // TGT_ACC_MAPTYPE_GANG_PRIVATE
-static constexpr uint64_t kWorkerPrivateFlag = 0x8000; // TGT_ACC_MAPTYPE_WORKER_PRIVATE
-static constexpr uint64_t kVectorPrivateFlag = 0x10000; // TGT_ACC_MAPTYPE_VECTOR_PRIVATE
-static constexpr uint64_t kInitZeroFlag = 0x20000;     // TGT_ACC_MAPTYPE_INIT_ZERO
-static constexpr uint64_t kDeviceResidentFlag = 0x40000; // TGT_ACC_MAPTYPE_DEVICE_RESIDENT
-static constexpr uint64_t kIfPresentFlag = 0x80000;    // TGT_ACC_MAPTYPE_IF_PRESENT
-static constexpr uint64_t kPresentFlag = 0x100000;     // TGT_ACC_MAPTYPE_PRESENT
-
-// The create operation has no map modifier in Interface.h. Attach/detach is
-// represented by PTR_AND_OBJ and, for detach, FINALIZE.
-static constexpr uint64_t kCreateFlag = kNoneFlag;
+/// ACC runtime specific flags from Interface.h TGT_ACC_MAPTYPE enum.
+static constexpr uint64_t kAccMapTypeNone = 0x0;            // TGT_ACC_MAPTYPE_NONE
+static constexpr uint64_t kAccMapTypeTo = 0x1;              // TGT_ACC_MAPTYPE_TO
+static constexpr uint64_t kAccMapTypeFrom = 0x2;            // TGT_ACC_MAPTYPE_FROM
+static constexpr uint64_t kAccMapTypeFinalize = 0x8;        // TGT_ACC_MAPTYPE_FINALIZE
+static constexpr uint64_t kAccMapTypePtrAndObj = 0x10;      // TGT_ACC_MAPTYPE_PTR_AND_OBJ
+static constexpr uint64_t kAccMapTypePrivate = 0x80;        // TGT_ACC_MAPTYPE_PRIVATE
+static constexpr uint64_t kAccMapTypeLiteral = 0x100;       // TGT_ACC_MAPTYPE_LITERAL
+static constexpr uint64_t kAccMapTypeDevPtr = 0x400;        // TGT_ACC_MAPTYPE_DEVPTR
+static constexpr uint64_t kAccMapTypeManagedDevPtr = 0x800; // TGT_ACC_MAPTYPE_MANAGED_DEVPTR
+static constexpr uint64_t kAccMapTypeNoCreate = 0x2000;     // TGT_ACC_MAPTYPE_NO_CREATE
+static constexpr uint64_t kAccMapTypeGangPrivate = 0x4000;     // TGT_ACC_MAPTYPE_GANG_PRIVATE
+static constexpr uint64_t kAccMapTypeWorkerPrivate = 0x8000;   // TGT_ACC_MAPTYPE_WORKER_PRIVATE
+static constexpr uint64_t kAccMapTypeVectorPrivate = 0x10000;  // TGT_ACC_MAPTYPE_VECTOR_PRIVATE
+static constexpr uint64_t kAccMapTypeInitZero = 0x20000;       // TGT_ACC_MAPTYPE_INIT_ZERO
+static constexpr uint64_t kAccMapTypeDeviceResident = 0x40000; // TGT_ACC_MAPTYPE_DEVICE_RESIDENT
+static constexpr uint64_t kAccMapTypeIfPresent = 0x80000;      // TGT_ACC_MAPTYPE_IF_PRESENT
+static constexpr uint64_t kAccMapTypePresent = 0x100000;    // TGT_ACC_MAPTYPE_PRESENT
 
 /// Default value for the device id
 static constexpr int64_t kDefaultDevice = -1;
@@ -702,7 +698,7 @@ static uint64_t getMappingFlag(Operation *parent, Value var,
                                uint64_t flag, bool isScalar) {
   Operation *entry = findDataEntryForMapping(parent, var);
   bool hasBounds = entry && !acc::getBounds(entry).empty();
-  return (isScalar || hasBounds) ? (flag & ~kPtrAndObjFlag) : flag;
+  return (isScalar || hasBounds) ? (flag & ~kAccMapTypePtrAndObj) : flag;
 }
 
 /// Extract pointer, size and mapping information from operands
@@ -793,7 +789,7 @@ processOperands(llvm::IRBuilderBase &builder,
       } else {
         dataSize = accBuilder->getSizeInBytes(dataValue);
       }
-      if (!(mappingFlag & kPtrAndObjFlag))
+      if (!(mappingFlag & kAccMapTypePtrAndObj))
         dataPtrBase = llvm::ConstantPointerNull::get(
             llvm::PointerType::getUnqual(ctx));
     } else {
@@ -866,26 +862,27 @@ processDataOperands(llvm::IRBuilderBase &builder,
 
   // Create operands are handled as `alloc` call.
   if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypeNone | kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag, flags, names,
+                             nbTotalOperands, kAccMapTypeTo | kAccMapTypePtrAndObj, flags, names,
                              index, mapperAllocas)))
     return failure();
 
   // Attach operands are handled as `attach` call.
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
-                             nbTotalOperands, kPtrAndObjFlag, flags, names,
+                             nbTotalOperands, kAccMapTypePtrAndObj, flags, names,
                              index, mapperAllocas)))
     return failure();
 
-  // Create_zero operands are handled as `alloc` call with PTR_AND_OBJ.
+  // Create_zero operands are handled as `alloc` call with zero initialization.
   if (failed(processOperands(builder, moduleTranslation, op, createZeroOperands,
-                             nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags, names,
-                             index, mapperAllocas)))
+                             nbTotalOperands,
+                             kAccMapTypeNone | kAccMapTypePtrAndObj | kAccMapTypeInitZero,
+                             flags, names, index, mapperAllocas)))
     return failure();
 
   return success();
@@ -918,23 +915,33 @@ processDataOperands(llvm::IRBuilderBase &builder,
 
   auto nbTotalOperands = deleteOperands.size() + copyoutOperands.size() +
                          detachOperands.size();
+  // The finalize clause forces unmapping of data, ignoring the dynamic
+  // reference count (TGT_ACC_MAPTYPE_FINALIZE).
+  uint64_t finalizeFlag =
+      op.getFinalize() ? kAccMapTypeFinalize : kAccMapTypeNone;
 
-  // Delete operands are handled as `delete` call.
+  // Delete operands are handled as `delete` call, with the finalize flag
+  // if the exit_data operation has the finalize clause.
   if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kDeleteFlag | kPtrAndObjFlag, flags, names, index,
-                             mapperAllocas)))
+                             nbTotalOperands,
+                             finalizeFlag | kAccMapTypePtrAndObj, flags, names,
+                             index, mapperAllocas)))
     return failure();
 
   // Copyout operands are handled as `from` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyoutOperands,
-                             nbTotalOperands, kHostCopyoutFlag | kPtrAndObjFlag, flags,
-                             names, index, mapperAllocas)))
+                             nbTotalOperands,
+                             kAccMapTypeFrom | finalizeFlag |
+                                 kAccMapTypePtrAndObj,
+                             flags, names, index, mapperAllocas)))
     return failure();
 
-  // Detach operands are handled as `detach` call (attach + delete + PTR_AND_OBJ).
+  // Detach operands are handled as `detach` call (PTR_AND_OBJ, with the
+  // finalize flag if the exit_data operation has the finalize clause).
   if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
-                             nbTotalOperands, kDeleteFlag | kPtrAndObjFlag, flags,
-                             names, index, mapperAllocas)))
+                             nbTotalOperands,
+                             finalizeFlag | kAccMapTypePtrAndObj, flags, names,
+                             index, mapperAllocas)))
     return failure();
 
   return success();
@@ -964,12 +971,12 @@ processDataOperands(llvm::IRBuilderBase &builder,
   }
 
   if (failed(processOperands(builder, moduleTranslation, op, from, from.size(),
-                             kHostCopyoutFlag | kPtrAndObjFlag, flags, names, index,
+                             kAccMapTypeFrom | kAccMapTypePtrAndObj, flags, names, index,
                              mapperAllocas)))
     return failure();
 
   if (failed(processOperands(builder, moduleTranslation, op, to, to.size(),
-                             kDeviceCopyinFlag | kPtrAndObjFlag, flags, names, index,
+                             kAccMapTypeTo | kAccMapTypePtrAndObj, flags, names, index,
                              mapperAllocas)))
     return failure();
   return success();
@@ -1007,19 +1014,19 @@ processDataOperands(llvm::IRBuilderBase &builder,
                             deviceptr.size();
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
                              totalNbOperand,
-                             kDeviceCopyinFlag | kPtrAndObjFlag, flags, names,
+                             kAccMapTypeTo | kAccMapTypePtrAndObj, flags, names,
                              index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, create,
-                             totalNbOperand, kCreateFlag | kPtrAndObjFlag,
+                             totalNbOperand, kAccMapTypeNone | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, present,
-                             totalNbOperand, kPresentFlag | kNoCreateFlag, flags,
+                             totalNbOperand, kAccMapTypePresent | kAccMapTypeNoCreate, flags,
                              names, index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, deviceptr,
-                             totalNbOperand, kDevicePtrFlag | kPtrAndObjFlag,
+                             totalNbOperand, kAccMapTypeDevPtr | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
   return success();
@@ -1070,17 +1077,17 @@ processDataOperands(llvm::IRBuilderBase &builder,
   unsigned totalNbOperand = deleteOperands.size() + copyoutOperands.size() +
                             detachOperands.size();
   if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             totalNbOperand, kDeleteFlag | kPtrAndObjFlag,
+                             totalNbOperand, kAccMapTypeFinalize | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, copyoutOperands,
                              totalNbOperand,
-                             kHostCopyoutFlag | kPtrAndObjFlag, flags, names,
+                             kAccMapTypeFrom | kAccMapTypePtrAndObj, flags, names,
                              index, mapperAllocas)))
     return failure();
   if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
                              totalNbOperand,
-                             kDeleteFlag | kPtrAndObjFlag,
+                             kAccMapTypeFinalize | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
   return success();
@@ -1561,48 +1568,48 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // Copyin operands are handled as `to` call.
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
+                             nbTotalOperands, kAccMapTypeTo | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
 
   // Delete operands are handled as `delete` call.
     if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                               nbTotalOperands, kDeleteFlag, flags, names, index,
+                               nbTotalOperands, kAccMapTypeFinalize, flags, names, index,
                                mapperAllocas)))
       return failure();
 
     // Copyout operands are handled as `from` call.
     if (failed(processOperands(builder, moduleTranslation, op, copyout,
-                               nbTotalOperands, kHostCopyoutFlag | kPtrAndObjFlag, flags,
+                               nbTotalOperands, kAccMapTypeFrom | kAccMapTypePtrAndObj, flags,
                                names, index, mapperAllocas)))
       return failure();
 
     // Create operands are handled as `alloc` call.
     if (failed(processOperands(builder, moduleTranslation, op, create,
-                               nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags,
+                               nbTotalOperands, kAccMapTypeNone | kAccMapTypePtrAndObj, flags,
                                names, index, mapperAllocas)))
       return failure();
 
   if (failed(processOperands(builder, moduleTranslation, op, present,
-                             nbTotalOperands, kPresentFlag | kNoCreateFlag, flags,
+                             nbTotalOperands, kAccMapTypePresent | kAccMapTypeNoCreate, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // No_create operands - no ALLOC/TO/FROM flags, just PTR_AND_OBJ for presence.
   if (failed(processOperands(builder, moduleTranslation, op, noCreateOperands,
-                             nbTotalOperands, kNoCreateFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypeNoCreate | kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Attach operands are handled as `attach` call.
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
-                             nbTotalOperands, kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Deviceptr operands are already device addresses and must not be copied.
   if (failed(processOperands(builder, moduleTranslation, op, deviceptrOperands,
-                             nbTotalOperands, kDevicePtrFlag | kPtrAndObjFlag,
+                             nbTotalOperands, kAccMapTypeDevPtr | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
 
@@ -1626,23 +1633,23 @@ static LogicalResult convertDataOp(acc::DataOp &op,
         return isa<acc::CopyoutOp>(use.getOwner());
       });
     }
-    appendEndFlag(data, isCopyout ? (kHostCopyoutFlag | kPtrAndObjFlag)
-                                  : (kDeleteFlag | kPtrAndObjFlag));
+    appendEndFlag(data, isCopyout ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
+                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj));
   }
-  appendEndFlags(deleteOperands, kDeleteFlag);
-  appendEndFlags(copyout, kHostCopyoutFlag | kPtrAndObjFlag);
+  appendEndFlags(deleteOperands, kAccMapTypeFinalize);
+  appendEndFlags(copyout, kAccMapTypeFrom | kAccMapTypePtrAndObj);
   for (Value data : create) {
     Operation *entry = findDataEntryForMapping(op, data);
     bool isCopyout = entry &&
                      cast<acc::CreateOp>(entry).getDataClause() ==
                          acc::DataClause::acc_copyout;
-    appendEndFlag(data, isCopyout ? (kHostCopyoutFlag | kPtrAndObjFlag)
-                                  : (kDeleteFlag | kPtrAndObjFlag));
+    appendEndFlag(data, isCopyout ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
+                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj));
   }
-  appendEndFlags(present, kPresentFlag | kNoCreateFlag);
-  appendEndFlags(noCreateOperands, kNoCreateFlag | kPtrAndObjFlag);
-  appendEndFlags(attachOperands, kPtrAndObjFlag);
-  appendEndFlags(deviceptrOperands, kDevicePtrFlag | kPtrAndObjFlag);
+  appendEndFlags(present, kAccMapTypePresent | kAccMapTypeNoCreate);
+  appendEndFlags(noCreateOperands, kAccMapTypeNoCreate | kAccMapTypePtrAndObj);
+  appendEndFlags(attachOperands, kAccMapTypePtrAndObj);
+  appendEndFlags(deviceptrOperands, kAccMapTypeDevPtr | kAccMapTypePtrAndObj);
 
   llvm::GlobalVariable *endMaptypes =
       accBuilder->createOffloadMaptypes(endFlags, ".offload_maptypes_end");
@@ -1850,49 +1857,49 @@ static LogicalResult convertComputeOp(OpTy &op,
 
   // Copyin → TO
   if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
+                             nbTotalOperands, kAccMapTypeTo | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
     return failure();
 
   // Delete
   if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kDeleteFlag, flags, names, index,
+                             nbTotalOperands, kAccMapTypeFinalize, flags, names, index,
                              mapperAllocas)))
     return failure();
 
   // Copyout → FROM
   if (failed(processOperands(builder, moduleTranslation, op, copyout,
-                             nbTotalOperands, kHostCopyoutFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypeFrom | kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Create → ALLOC
   if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypeNone | kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Present
   if (failed(processOperands(builder, moduleTranslation, op, present,
-                             nbTotalOperands, kPresentFlag | kNoCreateFlag, flags,
+                             nbTotalOperands, kAccMapTypePresent | kAccMapTypeNoCreate, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // No_create
   if (failed(processOperands(builder, moduleTranslation, op, noCreateOperands,
-                             nbTotalOperands, kNoCreateFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypeNoCreate | kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Attach
   if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
-                             nbTotalOperands, kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
   // Deviceptr
   if (failed(processOperands(builder, moduleTranslation, op, deviceptrOperands,
-                             nbTotalOperands, kDevicePtrFlag | kPtrAndObjFlag, flags,
+                             nbTotalOperands, kAccMapTypeDevPtr | kAccMapTypePtrAndObj, flags,
                              names, index, mapperAllocas)))
     return failure();
 
@@ -2027,10 +2034,41 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   if (failed(emitStandaloneWait(op, builder, moduleTranslation, srcLocInfo)))
     return failure();
 
-  // Emit call to OpenACC data runtime function
+  // Materialize the optional if condition. Only acc.enter_data and
+  // acc.exit_data carry an if clause here.
+  llvm::Value *cond = nullptr;
+  if constexpr (std::is_same_v<OpTy, acc::EnterDataOp> ||
+                std::is_same_v<OpTy, acc::ExitDataOp>) {
+    if (op.getIfCond()) {
+      cond = moduleTranslation.lookupValue(op.getIfCond());
+      if (!cond) {
+        op.emitError("could not find LLVM value for if condition");
+        return failure();
+      }
+    }
+  }
+
+  // No if clause: emit the data runtime call directly.
+  if (!cond) {
+    emitAccDataCall(builder, mapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
+                    argNumVal, argsBasePtr, argsPtr, argSizesPtr, maptypesArg,
+                    mapnamesArg, asyncArg);
+    return success();
+  }
+
+  // With an if clause, guard the data runtime call with a conditional branch.
+  llvm::Function *function = builder.GetInsertBlock()->getParent();
+  llvm::BasicBlock *thenBlock =
+      llvm::BasicBlock::Create(ctx, "acc.standalone.then", function);
+  llvm::BasicBlock *endBlock =
+      llvm::BasicBlock::Create(ctx, "acc.standalone.end", function);
+  builder.CreateCondBr(cond, thenBlock, endBlock);
+  builder.SetInsertPoint(thenBlock);
   emitAccDataCall(builder, mapperFunc, srcLocInfo, flagsVal, deviceTypeVal,
-                  argNumVal, argsBasePtr, argsPtr, argSizesPtr,
-                  maptypesArg, mapnamesArg, asyncArg);
+                  argNumVal, argsBasePtr, argsPtr, argSizesPtr, maptypesArg,
+                  mapnamesArg, asyncArg);
+  builder.CreateBr(endBlock);
+  builder.SetInsertPoint(endBlock);
 
   return success();
 }
@@ -2411,40 +2449,40 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                    deviceptrOperands.size() + privateOperands.size();
 
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, copyin,
-                                       nbTotalOperands, kDeviceCopyinFlag | kPtrAndObjFlag,
+                                       nbTotalOperands, kAccMapTypeTo | kAccMapTypePtrAndObj,
                                        flags, names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, deleteOperands,
-                                       nbTotalOperands, kDeleteFlag, flags, names, index,
+                                       nbTotalOperands, kAccMapTypeFinalize, flags, names, index,
                                        mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, copyout,
-                                       nbTotalOperands, kHostCopyoutFlag | kPtrAndObjFlag, flags,
+                                       nbTotalOperands, kAccMapTypeFrom | kAccMapTypePtrAndObj, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, create,
-                                       nbTotalOperands, kCreateFlag | kPtrAndObjFlag, flags,
+                                       nbTotalOperands, kAccMapTypeNone | kAccMapTypePtrAndObj, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, present,
-                                       nbTotalOperands, kPresentFlag | kNoCreateFlag, flags,
+                                       nbTotalOperands, kAccMapTypePresent | kAccMapTypeNoCreate, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, noCreateOperands,
-                                       nbTotalOperands, kNoCreateFlag | kPtrAndObjFlag, flags,
+                                       nbTotalOperands, kAccMapTypeNoCreate | kAccMapTypePtrAndObj, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, attachOperands,
-                                       nbTotalOperands, kPtrAndObjFlag, flags,
+                                       nbTotalOperands, kAccMapTypePtrAndObj, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp, deviceptrOperands,
-                                       nbTotalOperands, kDevicePtrFlag | kPtrAndObjFlag, flags,
+                                       nbTotalOperands, kAccMapTypeDevPtr | kAccMapTypePtrAndObj, flags,
                                        names, index, mapperAllocas)))
               return failure();
             if (failed(processOperands(builder, moduleTranslation, kernelEnvOp,
                                        privateOperands, nbTotalOperands,
-                                       kCreateFlag, flags, names, index,
+                                       kAccMapTypeNone, flags, names, index,
                                        mapperAllocas)))
               return failure();
 
@@ -2468,16 +2506,16 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                 });
               }
               uint64_t flag = isCopyout
-                                  ? (kHostCopyoutFlag | kPtrAndObjFlag)
-                                  : (kDeleteFlag | kPtrAndObjFlag);
+                                  ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
+                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj);
               uint64_t scalarSize = 0;
               bool isScalar = getScalarMappingSize(
                   kernelEnvOp, data, moduleTranslation, scalarSize);
               endFlags.push_back(
                   getMappingFlag(kernelEnvOp, data, flag, isScalar));
             }
-            appendEndFlags(deleteOperands, kDeleteFlag);
-            appendEndFlags(copyout, kHostCopyoutFlag | kPtrAndObjFlag);
+            appendEndFlags(deleteOperands, kAccMapTypeFinalize);
+            appendEndFlags(copyout, kAccMapTypeFrom | kAccMapTypePtrAndObj);
             for (Value data : create) {
               auto *createOp = findDataEntryForMapping(kernelEnvOp, data);
               bool isCopyout = createOp &&
@@ -2486,19 +2524,19 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                 cast<acc::CreateOp>(createOp).getDataClause() ==
                                     acc::DataClause::acc_copyout_zero);
               uint64_t flag = isCopyout
-                                  ? (kHostCopyoutFlag | kPtrAndObjFlag)
-                                  : (kDeleteFlag | kPtrAndObjFlag);
+                                  ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
+                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj);
               uint64_t scalarSize = 0;
               bool isScalar = getScalarMappingSize(
                   kernelEnvOp, data, moduleTranslation, scalarSize);
               endFlags.push_back(
                   getMappingFlag(kernelEnvOp, data, flag, isScalar));
             }
-            appendEndFlags(privateOperands, kDeleteFlag);
-            appendEndFlags(present, kPresentFlag | kNoCreateFlag);
-            appendEndFlags(noCreateOperands, kNoCreateFlag | kPtrAndObjFlag);
-            appendEndFlags(attachOperands, kPtrAndObjFlag);
-            appendEndFlags(deviceptrOperands, kDevicePtrFlag | kPtrAndObjFlag);
+            appendEndFlags(privateOperands, kAccMapTypeFinalize);
+            appendEndFlags(present, kAccMapTypePresent | kAccMapTypeNoCreate);
+            appendEndFlags(noCreateOperands, kAccMapTypeNoCreate | kAccMapTypePtrAndObj);
+            appendEndFlags(attachOperands, kAccMapTypePtrAndObj);
+            appendEndFlags(deviceptrOperands, kAccMapTypeDevPtr | kAccMapTypePtrAndObj);
 
             llvm::GlobalVariable *maptypes =
                 accBuilder->createOffloadMaptypes(flags, ".offload_maptypes");
