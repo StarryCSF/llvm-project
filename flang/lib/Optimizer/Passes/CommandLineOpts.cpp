@@ -63,11 +63,12 @@ cl::opt<bool> useOldAliasTags(
     cl::init(false), cl::Hidden);
 EnableOption(FirLICM, "fir-licm", "FIR loop invariant code motion");
 
+/// OpenACC Pass Pipeline
+DisableOption(ACCPipeline, "acc-pipeline", "OpenACC native pipeline");
+
 /// CodeGen Passes
 DisableOption(CodeGenRewrite, "codegen-rewrite", "rewrite FIR for codegen");
 DisableOption(TargetRewrite, "target-rewrite", "rewrite FIR for target");
-DisableOption(Recipe, "recipe",
-              "OpenACC recipe bufferization and materialization");
 DisableOption(DebugInfo, "debug-info", "Add debug info");
 DisableOption(FirToLlvmIr, "fir-to-llvmir", "FIR to LLVM-IR dialect");
 DisableOption(LlvmIrToLlvm, "llvm", "conversion to LLVM");

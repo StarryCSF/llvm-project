@@ -58,10 +58,12 @@ extern llvm::cl::opt<bool> disableFirMao;
 extern llvm::cl::opt<bool> enableFirLICM;
 extern llvm::cl::opt<bool> useOldAliasTags;
 
+/// OpenACC Pass Pipeline
+extern llvm::cl::opt<bool> disableACCPipeline;
+
 /// CodeGen Passes
 extern llvm::cl::opt<bool> disableCodeGenRewrite;
 extern llvm::cl::opt<bool> disableTargetRewrite;
-extern llvm::cl::opt<bool> disableRecipe;
 extern llvm::cl::opt<bool> disableDebugInfo;
 extern llvm::cl::opt<bool> disableFirToLlvmIr;
 extern llvm::cl::opt<bool> disableLlvmIrToLlvm;

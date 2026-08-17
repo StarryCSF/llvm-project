@@ -461,11 +461,6 @@ void createDefaultFIRCodeGenPassPipeline(mlir::PassManager &pm,
         flangomp::createLowerNontemporalPass());
   }
 
-  // Materialize OpenACC private, firstprivate and reduction recipes before
-  // FIR-to-LLVM conversion, which expects no recipe ops to remain.
-  if (config.EnableOpenACC && !disableRecipe)
-    fir::acc::populateFIRCodeGenOpenACCPassPipeline(pm);
-
   fir::addFIRToLLVMPass(pm, config);
   pm.addPass(fir::createEmitMIFGlobalCtors());
 
@@ -496,6 +491,11 @@ void createMLIRToLLVMPassPipeline(mlir::PassManager &pm,
   if (config.EnableOpenMPSimd)
     enableOpenMP = fir::EnableOpenMP::Simd;
   fir::createHLFIRToFIRPassPipeline(pm, enableOpenMP, config);
+
+  if (config.EnableOpenACC && !disableACCPipeline) {
+    fir::acc::OpenACCFlangPipelineOptions options;
+    fir::acc::buildOpenACCFlangPipeline(pm, options);
+  }
 
   // Add default optimizer pass pipeline.
   fir::createDefaultFIROptimizerPassPipeline(pm, config);
@@ -535,7 +535,9 @@ void registerFlangPipelinePasses() {
   hlfir::registerHLFIRPasses();
   flangomp::registerFlangOpenMPPasses();
   fir::acc::registerFIROpenACCPasses();
-  mlir::acc::registerACCRecipeMaterialization();
+  fir::acc::registerOpenACCFlangPipelines();
+  mlir::acc::registerOpenACCPasses();
+  mlir::registerConvertOpenACCToSCFPass();
 }
 
 } // namespace fir

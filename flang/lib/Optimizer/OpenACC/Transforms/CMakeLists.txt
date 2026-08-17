@@ -19,7 +19,10 @@ add_flang_library(FIROpenACCTransforms
   HLFIRDialect
 
   MLIR_LIBS
+  MLIRFuncDialect
+  MLIRGPUDialect
   MLIRIR
+  MLIROpenACCToSCF
   MLIROpenACCTransforms
   MLIRPass
   MLIROpenACCDialect

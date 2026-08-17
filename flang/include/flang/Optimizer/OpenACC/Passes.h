@@ -18,9 +18,15 @@
 #include "mlir/Dialect/OpenACC/OpenACC.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/Support/CommandLine.h"
 
 #include <memory>
+
+namespace mlir {
+class OpPassManager;
+} // namespace mlir
 
 namespace fir {
 namespace acc {
@@ -33,9 +39,36 @@ std::unique_ptr<mlir::Pass> createACCOptimizeFirstprivateMapPass();
 std::unique_ptr<mlir::Pass> createACCRecipeBufferizationPass();
 std::unique_ptr<mlir::Pass> createACCUseDeviceCanonicalizerPass();
 
-/// Populate the OpenACC pass pipeline that runs immediately before FIR
-/// code generation.
-void populateFIRCodeGenOpenACCPassPipeline(mlir::PassManager &pm);
+/// Options for the Flang OpenACC pipeline.
+struct OpenACCFlangPipelineOptions
+    : public mlir::PassPipelineOptions<OpenACCFlangPipelineOptions> {
+  PassOptions::Option<mlir::acc::DeviceType> deviceType{
+      *this, "device-type", llvm::cl::desc("Target OpenACC device type"),
+      llvm::cl::init(mlir::acc::DeviceType::Nvidia),
+      llvm::cl::values(
+          clEnumValN(mlir::acc::DeviceType::Nvidia, "nvidia", "NVIDIA GPU"))};
+
+  PassOptions::Option<bool> emitRemarks{
+      *this, "emit-remarks",
+      llvm::cl::desc("Emit OpenACC private and loop mapping remarks"),
+      llvm::cl::init(false)};
+
+  PassOptions::Option<bool> enableImplicitReductionCopy{
+      *this, "enable-implicit-reduction-copy",
+      llvm::cl::desc("Use implicit copy for reduction variables"),
+      llvm::cl::init(true)};
+  PassOptions::Option<bool> ignoreDefaultNone{
+      *this, "ignore-default-none",
+      llvm::cl::desc("Generate implicit data under verified default(none)"),
+      llvm::cl::init(false)};
+};
+
+/// Build the Flang OpenACC pipeline.
+void buildOpenACCFlangPipeline(mlir::OpPassManager &pm,
+                               const OpenACCFlangPipelineOptions &options);
+
+/// Register the Flang OpenACC pipeline.
+void registerOpenACCFlangPipelines();
 
 } // namespace acc
 } // namespace fir
