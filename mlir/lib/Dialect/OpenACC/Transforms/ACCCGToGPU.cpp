@@ -444,6 +444,19 @@ private:
   void processReductionCombineOp(acc::ReductionCombineOp op);
   /// Lower `acc.reduction_combine_region`.
   void processCombineRegionOp(acc::ReductionCombineRegionOp op);
+  /// Convert unstructured FIR loops (e.g. the fir.do_loop of an array
+  /// reduction recipe) in \p region into scf.for, in place.  Recipe regions
+  /// are materialized after the fir-to-scf conversion has already run, so
+  /// their loops keep FIR structure.  Cloning such a loop into a
+  /// single-block structured region (scf.if/scf.for/scf.parallel) would be
+  /// invalid: the later cfg-conversion pass expands the loop in place into
+  /// multiple blocks.  After the conversion the loops flow through the
+  /// regular processSeqLoop path.
+  void structuredizeRecipeLoops(Region &region);
+  /// One plain `fir.do_loop` (control operands only, no iter args, no
+  /// results) converted by structuredizeRecipeLoops; returns false when the
+  /// op is left untouched.
+  bool convertFIRDoLoopToSCFFor(Operation *op);
   /// Clone a leaf operation into the lowered region.
   void processGenericOp(Operation *op);
   /// Clone and recursively lower an operation with nested regions.
@@ -1361,6 +1374,11 @@ Value ACCCGToGPULowering::emitPredicate(
     Location loc, SmallVector<mlir::acc::GPUParallelDimAttr> &inactiveParDims) {
   Value predicate;
   for (mlir::acc::GPUParallelDimAttr inactiveParDim : inactiveParDims) {
+    // Sequential dims have no GPU thread id (getGPUThreadIdFromLaunch
+    // returns null for Sequential), and code under a sequential dim runs
+    // identically on every thread, so they never contribute a predicate.
+    if (inactiveParDim.isSeq())
+      continue;
     Value threadId = getGPUThreadIdFor(inactiveParDim.getProcessor());
     TypedAttr zeroAttr = rewriter.getZeroAttr(threadId.getType());
     Value zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
@@ -3332,7 +3350,75 @@ void ACCCGToGPULowering::processAccumulateArrayOp(
   eraseDeadBounds();
 }
 
+void ACCCGToGPULowering::structuredizeRecipeLoops(Region &region) {
+  SmallVector<Operation *, 4> loops;
+  region.walk([&](Operation *op) {
+    // Match by name: fir.do_loop is the loop form the reduction recipes
+    // generate, and the FIR dialect cannot be a dependency here to cast to
+    // its C++ types.
+    if (op->getName().getStringRef() == "fir.do_loop")
+      loops.push_back(op);
+  });
+  // Convert outermost-first: pre-order collection lists a parent loop before
+  // its nested loops, so nested loops are spliced into the new scf.for with
+  // their parent and then converted at their new location.
+  for (Operation *op : loops)
+    if (op->getParentOp())
+      convertFIRDoLoopToSCFFor(op);
+}
+
+bool ACCCGToGPULowering::convertFIRDoLoopToSCFFor(Operation *op) {
+  // Only handle the plain form the recipes generate: control operands
+  // (lower, upper, step) only, no reduce/init args, no iter args, no
+  // results, and an empty yield.  fir.do_loop's LoopLikeOpInterface
+  // accessors for bounds and iter args are not implemented, so richer forms
+  // cannot be described from here.
+  Region &oldRegion = op->getRegion(0);
+  if (op->getNumOperands() != 3 || op->getNumResults() != 0 ||
+      !oldRegion.hasOneBlock())
+    return false;
+  Block &oldBlock = oldRegion.front();
+  if (oldBlock.getNumArguments() != 1 ||
+      oldBlock.getTerminator()->getNumOperands() != 0)
+    return false;
+
+  Location loc = op->getLoc();
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(op);
+  // fir.do_loop iterates [lb, ub] inclusive while scf.for iterates
+  // [lb, ub), so canonicalize via the trip count and remap the induction
+  // variable, mirroring flang's fir-to-scf conversion.
+  Value lb = op->getOperand(0);
+  Value ub = op->getOperand(1);
+  Value step = op->getOperand(2);
+  Value diff = arith::SubIOp::create(rewriter, loc, ub, lb);
+  Value distance = arith::AddIOp::create(rewriter, loc, diff, step);
+  Value tripCount = arith::DivSIOp::create(rewriter, loc, distance, step);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto newFor = scf::ForOp::create(rewriter, loc, zero, tripCount, one);
+  if (mlir::acc::GPUParallelDimsAttr dims = mlir::acc::getParDimsAttr(op))
+    mlir::acc::setParDimsAttr(newFor, dims);
+
+  Block &newBody = newFor.getRegion().front();
+  newBody.getOperations().splice(newBody.begin(), oldBlock.getOperations(),
+                                 oldBlock.begin(),
+                                 std::prev(oldBlock.end()));
+
+  rewriter.setInsertionPointToStart(&newBody);
+  Value iv = arith::MulIOp::create(rewriter, loc, newFor.getInductionVar(),
+                                   step);
+  iv = arith::AddIOp::create(rewriter, loc, lb, iv);
+  oldBlock.getArgument(0).replaceAllUsesWith(iv);
+  rewriter.eraseOp(op);
+  return true;
+}
+
 void ACCCGToGPULowering::processReductionOp(acc::ReductionInitOp op) {
+  // The init recipe body may contain FIR loops (e.g. zeroing an array
+  // reduction element-wise); structuredize them so the cloning below can
+  // never leave a fir loop inside a single-block scf region.
+  structuredizeRecipeLoops(op.getRegion());
   // Clone the inner ops of the reduction op only
   op.getRegion().walk<WalkOrder::PreOrder>([&](Operation *innerOp) {
     if (acc::YieldOp yieldOp = dyn_cast<acc::YieldOp>(innerOp)) {
@@ -3405,6 +3491,11 @@ void ACCCGToGPULowering::processCombineRegionOp(
     acc::ReductionCombineRegionOp op) {
   LLVM_DEBUG(llvm::dbgs() << "processing combine region op: ";
              op->print(llvm::dbgs()); llvm::dbgs() << "\n");
+  // The combine recipe body may contain FIR loops (e.g. combining an array
+  // reduction element-wise); structuredize them so the cloning below can
+  // never leave a fir loop inside a single-block scf region (scf.if of the
+  // predicated path, or the serialized scf.parallel/for bodies).
+  structuredizeRecipeLoops(op.getRegion());
   // A block par_dim on a combine into a thread-private stack alloca is not a
   // real cross-block accumulation (the alloca is not shared across blocks), so
   // it must use a plain load/combine/store rather than an atomic update.
@@ -3505,6 +3596,65 @@ void ACCCGToGPULowering::processCombineRegionOp(
         return;
       }
     }
+  }
+  // Serialized reduction: the reduction loop was executed serially by every
+  // thread and produced identical values in the source slot, and there is no
+  // acc.reduction_accumulate to atomically combine across threads.  The
+  // remaining generic combine mutates the destination with a
+  // read-modify-write; executing it on every thread over-counts (a thread
+  // running behind re-combines an already combined destination).  Execute the
+  // combine once per gang and barrier before later reads of the destination
+  // (e.g. a following worker loop consuming the reduced value).
+  bool combineHasThreadDim =
+      llvm::any_of(parDims, [](mlir::acc::GPUParallelDimAttr d) {
+        return !d.isAnyBlock() && !d.isSeq();
+      });
+  bool srcHasAccumulateUser = false;
+  for (Operation *user : op.getSrcVar().getUsers())
+    if (isa<acc::ReductionAccumulateOp>(user))
+      srcHasAccumulateUser = true;
+  if (!combineHasThreadDim && !srcHasAccumulateUser &&
+      !destIsPerThreadPrivate) {
+    Location loc = op.getLoc();
+    SmallVector<mlir::acc::GPUParallelDimAttr> predDims;
+    MLIRContext *ctx = computeRegion->getContext();
+    bool hasThreadX = false;
+    for (auto launchParDim : computeRegion.getLaunchParDims()) {
+      // A sequential launch dim (acc.serial) has no thread-id predication.
+      if (launchParDim.isSeq())
+        continue;
+      if (launchParDim.isThreadX())
+        hasThreadX = true;
+      if (!launchParDim.isAnyBlock())
+        predDims.push_back(launchParDim);
+    }
+    // Subgroup alignment may add ThreadX lanes even without ThreadX
+    // parallelism; predicate on it so a single lane performs the combine.
+    if (!hasThreadX)
+      predDims.push_back(mlir::acc::GPUParallelDimAttr::threadXDim(ctx));
+    Value predicate = emitPredicate(loc, predDims);
+    // The combine sits in uniform gang-level control flow, so workgroup
+    // barriers around it cannot deadlock.  The leading barrier makes the
+    // serial loop's writes to the source slot visible to the combining
+    // lane; the trailing barrier publishes the combined destination before
+    // later reads (e.g. a following worker loop).
+    emitGPUBarrierWorkgroup(rewriter, loc);
+    auto ifOp =
+        scf::IfOp::create(rewriter, loc, predicate, /*withElseRegion=*/false);
+    rewriter.setInsertionPoint(ifOp.getThenRegion().back().getTerminator());
+    op.getRegion().walk<WalkOrder::PreOrder>([&](Operation *innerOp) {
+      if (isa<acc::YieldOp>(innerOp))
+        return WalkResult::interrupt();
+      if (innerOp->getNumRegions() > 0) {
+        processOp(innerOp);
+        return WalkResult::skip();
+      }
+      rewriter.clone(*innerOp, mapping);
+      return WalkResult::advance();
+    });
+    rewriter.setInsertionPointAfter(ifOp);
+    emitGPUBarrierWorkgroup(rewriter, loc);
+    return;
   }
   op.getRegion().walk<WalkOrder::PreOrder>([&](Operation *innerOp) {
     if (acc::YieldOp yieldOp = dyn_cast<acc::YieldOp>(innerOp))

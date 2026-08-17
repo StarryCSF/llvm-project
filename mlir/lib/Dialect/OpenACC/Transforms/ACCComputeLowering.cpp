@@ -173,19 +173,52 @@ getParallelDimensions(LoopOp loopOp, const ACCToGPUMappingPolicy &policy,
   SmallVector<GPUParallelDimAttr> parDims;
   auto *ctx = loopOp->getContext();
 
+  // ACCRecipeMaterialization runs before this pass and clears the loop's
+  // reduction operand list: the reduction slot is created by an
+  // acc.reduction_init outside the loop (typically in the enclosing gang
+  // body) and the loop body only references it, so neither the operand list
+  // nor a region scan for acc.reduction_init finds the reduction. Detect the
+  // materialized form by checking whether the loop region uses a value
+  // defined by an acc.reduction_init (or contains one directly). Otherwise a
+  // worker/vector loop carrying a reduction keeps its thread parallelism and
+  // the unreduced per-thread partial results race in the shared reduction
+  // slot.
   bool hasReduction = !loopOp.getReductionOperands().empty();
+  if (!hasReduction) {
+    loopOp.getRegion().walk([&](Operation *op) {
+      if (isa<ReductionInitOp, ReductionCombineRegionOp>(op)) {
+        hasReduction = true;
+        return WalkResult::interrupt();
+      }
+      for (Value operand : op->getOperands())
+        if (operand.getDefiningOp<ReductionInitOp>()) {
+          hasReduction = true;
+          return WalkResult::interrupt();
+        }
+      return WalkResult::advance();
+    });
+  }
   if (loopOp.hasVector(deviceType) && !hasReduction)
     insertParDim(parDims, policy.vectorDim(ctx));
   if (loopOp.hasWorker(deviceType) && !hasReduction)
     insertParDim(parDims, policy.workerDim(ctx));
+  // Gang-level privatized storage (the reduction slot of a nested loop
+  // reduction) is staged in one shared device location for the whole launch,
+  // so distributing a loop that (transitively) carries such state across
+  // gangs aliases the slot across blocks.  Serialize gang loops containing a
+  // reduction as well; the gang iterations then run as a plain sequential
+  // loop, which is correct with the shared staging slot.
   if (auto gangDimValue = loopOp.getGangValue(GangArgType::Dim, deviceType)) {
     if (auto gangDimDefOp =
             gangDimValue.getDefiningOp<arith::ConstantIntOp>()) {
-      auto gangLevel = getGangParLevel(gangDimDefOp.value());
-      insertParDim(parDims, policy.gangDim(ctx, gangLevel));
+      if (!hasReduction) {
+        auto gangLevel = getGangParLevel(gangDimDefOp.value());
+        insertParDim(parDims, policy.gangDim(ctx, gangLevel));
+      }
     }
   } else if (loopOp.hasGang(deviceType)) {
-    insertParDim(parDims, policy.gangDim(ctx, ParLevel::gang_dim1));
+    if (!hasReduction)
+      insertParDim(parDims, policy.gangDim(ctx, ParLevel::gang_dim1));
   }
   return parDims;
 }
@@ -372,6 +405,14 @@ public:
         auto parDimsAttr =
             GPUParallelDimsAttr::get(loopOp->getContext(), parDims);
         setParDimsAttr(parallelOp, parDimsAttr);
+      } else {
+        // A loop whose parallelism was dropped (e.g. a reduction loop
+        // serialized per the workaround above) executes sequentially.  Mark
+        // it seq so the GPU lowering runs it through the sequential-loop
+        // path with the required barriers around shared private state,
+        // instead of leaving it without a par_dims attribute where every
+        // thread would run it redundantly without synchronization.
+        setParDimsAttr(parallelOp, GPUParallelDimsAttr::seq(loopOp->getContext()));
       }
 
       rewriter.replaceOp(loopOp, parallelOp);
@@ -401,6 +442,13 @@ public:
     rewriter.setInsertionPoint(computeOp);
     auto kernelEnv =
         KernelEnvironmentOp::createAndPopulate(computeOp, deviceType, rewriter);
+    {
+      // createAndPopulate leaves the insertion point inside the kernel
+      // environment region for the compute region; keep it there across the
+      // data mapping fixup, which inserts around the construct.
+      OpBuilder::InsertionGuard guard(rewriter);
+      mapUnmappedReductionResults(computeOp, kernelEnv, rewriter);
+    }
     auto launchArgs =
         assignKnownLaunchArgs(computeOp, deviceType, rewriter, policy);
     Region &region = computeOp.getRegion();
@@ -420,6 +468,90 @@ public:
   }
 
 private:
+  /// Reduction results are combined on the device into the original
+  /// variable.  The frontend only creates a mapping for sub-object
+  /// reductions (e.g. `reduction(+:arr(i))` gets an implicit
+  /// acc.copyin/acc.copyout pair); whole-variable reductions are not mapped,
+  /// so the in-kernel combine would target an unmapped host address and the
+  /// reduced value would be lost.  Map such variables for the lifetime of
+  /// the region: the initial value is copied in, and the combined result is
+  /// copied back out at region exit.
+  void mapUnmappedReductionResults(ComputeConstructT computeOp,
+                                   acc::KernelEnvironmentOp kernelEnv,
+                                   PatternRewriter &rewriter) const {
+    Region &region = computeOp.getRegion();
+
+    // Destinations of reduction combines that live outside the region.
+    SetVector<Value> dests;
+    region.walk([&](acc::ReductionCombineRegionOp combine) {
+      Value dest = combine.getDestVar();
+      if (dest && dest.getParentRegion() &&
+          !region.isAncestor(dest.getParentRegion()))
+        dests.insert(dest);
+    });
+    if (dests.empty())
+      return;
+
+    // Skip destinations already backed by a data clause.  A clause either
+    // maps the destination directly (its varPtr) or the destination is a
+    // view of the clause's mapped pointer (e.g. a fir.declare of the
+    // acc.copyin result of a sub-object reduction).
+    SmallVector<Value> clauseOperands = kernelEnv.getDataClauseOperands();
+    auto isMappedByClause = [&](Value dest) {
+      SmallVector<Value> worklist{dest};
+      while (!worklist.empty()) {
+        Value current = worklist.pop_back_val();
+        if (llvm::is_contained(clauseOperands, current))
+          return true;
+        Operation *def = current.getDefiningOp();
+        if (!def || def->getNumOperands() == 0 ||
+            def->getNumOperands() > 3)
+          continue;
+        for (Value operand : def->getOperands()) {
+          if (operand == current)
+            continue;
+          // Follow the storage the view/declare points at, skipping shape
+          // and type parameter operands by type mismatch.
+          worklist.push_back(operand);
+        }
+        for (Value clause : clauseOperands)
+          if (Operation *clauseDef = clause.getDefiningOp())
+            if (acc::getVar(clauseDef) == current)
+              return true;
+      }
+      return false;
+    };
+
+    for (Value dest : dests) {
+      if (isMappedByClause(dest))
+        continue;
+
+      rewriter.setInsertionPoint(kernelEnv);
+      auto copyin = acc::CopyinOp::create(
+          rewriter, dest.getLoc(), dest, /*structured=*/true,
+          /*implicit=*/true, acc::getVarNamePlaceholder());
+      copyin.setDataClause(acc::DataClause::acc_reduction);
+      Value mapped = copyin.getAccVar();
+
+      // Uses of the original variable inside the region now go through the
+      // mapped copy, including the reduction init and combine.
+      rewriter.replaceUsesWithIf(
+          dest, mapped, [&](OpOperand &use) {
+            Operation *user = use.getOwner();
+            return user->getParentRegion() &&
+                   region.isAncestor(user->getParentRegion());
+          });
+
+      kernelEnv.getDataClauseOperandsMutable().append(mapped);
+
+      rewriter.setInsertionPointAfter(computeOp);
+      auto copyout = acc::CopyoutOp::create(
+          rewriter, dest.getLoc(), mapped, dest, /*structured=*/true,
+          /*implicit=*/true, acc::getVarNamePlaceholder());
+      copyout.setDataClause(acc::DataClause::acc_reduction);
+    }
+  }
+
   const ACCToGPUMappingPolicy &policy;
   DeviceType deviceType;
 };
