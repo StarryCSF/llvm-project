@@ -17,6 +17,8 @@ using namespace llvm::acc::target;
 
 extern "C" {
 int acc_get_num_devices(acc_device_t DevType) {
+  if (!DM)
+    __tgt_acc_init(nullptr, 0, acc_device_default, 0);
   return DM->getNumDevices(DevType);
 }
 int acc_get_num_devices_(acc_device_t *DevType) {
@@ -24,6 +26,8 @@ int acc_get_num_devices_(acc_device_t *DevType) {
 }
 
 int acc_get_device_num(acc_device_t DevType) {
+  if (!DM)
+    __tgt_acc_init(nullptr, 0, acc_device_default, 0);
   return DM->getDeviceId(DevType);
 }
 int acc_get_device_num_(acc_device_t *DevType) {
@@ -49,10 +53,14 @@ void acc_set_device(acc_device_t DevType) {
 }
 void acc_set_device_(acc_device_t *DevType) { acc_set_device(*DevType); }
 
-acc_device_t acc_get_device_type(void) { return DM->getDeviceType(); }
+acc_device_t acc_get_device_type(void) {
+  if (!DM)
+    __tgt_acc_init(nullptr, 0, acc_device_default, 0);
+  return DM->getDeviceType();
+}
 acc_device_t acc_get_device_type_(void) { return acc_get_device_type(); }
 
-acc_device_t acc_get_device(void) { return DM->getDeviceType(); }
+acc_device_t acc_get_device(void) { return acc_get_device_type(); }
 acc_device_t acc_get_device_(void) { return acc_get_device(); }
 
 size_t acc_get_property(int DevNum, acc_device_t DevType,

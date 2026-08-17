@@ -148,11 +148,16 @@ int DeviceManagerTy::getPMDeviceId(acc_device_t DeviceType) {
            << icv::AccCurrentDefaultDeviceTypeVar;
     DeviceType = icv::AccCurrentDefaultDeviceTypeVar;
   }
-  ODBG() << "Current device has id "
-         << getSingleAccCurrentDeviceNumVar(DeviceType);
   checkICVs();
-  return getSingleDeviceTypeMap(
-      DeviceType)[getSingleAccCurrentDeviceNumVar(DeviceType)];
+  auto &DeviceMap = getSingleDeviceTypeMap(DeviceType);
+  auto DeviceNum = getSingleAccCurrentDeviceNumVar(DeviceType);
+  if (DeviceNum < 0 || static_cast<size_t>(DeviceNum) >= DeviceMap.size()) {
+    REPORT_FATAL() << "OpenACC device number " << DeviceNum
+                   << " is out of range for device type " << DeviceType
+                   << " (available: " << DeviceMap.size() << ")";
+  }
+  ODBG() << "Current device has id " << DeviceNum;
+  return DeviceMap[DeviceNum];
 }
 
 int DeviceManagerTy::getPMDeviceId() {
@@ -206,19 +211,33 @@ int DeviceManagerTy::getNumDevices(acc_device_t DeviceType) {
 }
 
 void DeviceManagerTy::setAllDeviceId(int DevNum) {
-  for (auto &CurrDevNum : icv::AccCurrentDeviceNumVar) {
-    CurrDevNum = DevNum;
+  for (int DeviceTypeInt = acc_device_concrete_type_begin;
+       DeviceTypeInt < acc_device_concrete_type_end; ++DeviceTypeInt) {
+    auto DeviceType = static_cast<acc_device_t>(DeviceTypeInt);
+    auto &DeviceMap = getSingleDeviceTypeMap(DeviceType);
+    if (DevNum < 0 || static_cast<size_t>(DevNum) >= DeviceMap.size())
+      continue;
+    getSingleAccCurrentDeviceNumVar(DeviceType) = DevNum;
   }
   checkICVs();
 }
 
 void DeviceManagerTy::setDeviceId(acc_device_t DeviceType, int DevNum) {
+  auto &DeviceMap = getSingleDeviceTypeMap(DeviceType);
+  if (DevNum < 0 || static_cast<size_t>(DevNum) >= DeviceMap.size()) {
+    REPORT_FATAL() << "OpenACC device number " << DevNum
+                   << " is out of range for device type " << DeviceType
+                   << " (available: " << DeviceMap.size() << ")";
+  }
   getSingleAccCurrentDeviceNumVar(DeviceType) = DevNum;
   checkICVs();
 }
 
 void DeviceManagerTy::setDeviceId(int DevNum) {
-  setDeviceId(icv::AccCurrentDeviceTypeVar, DevNum);
+  acc_device_t DeviceType = icv::AccCurrentDeviceTypeVar;
+  if (DeviceType == acc_device_default)
+    DeviceType = icv::AccCurrentDefaultDeviceTypeVar;
+  setDeviceId(DeviceType, DevNum);
   checkICVs();
 }
 
