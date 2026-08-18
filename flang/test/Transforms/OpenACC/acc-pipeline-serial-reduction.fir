@@ -1,14 +1,19 @@
-// RUN: fir-opt %s --fir-acc-pipeline | FileCheck %s
+// RUN: fir-opt %s --fir-acc-pipeline | FileCheck %s \
+// RUN:   --implicit-check-not=acc.compute_region \
+// RUN:   --implicit-check-not=acc.offload_id
 
 // Verify that serial legalization runs before recipe materialization. The
-// reduction recipe must be consumed successfully before compute lowering.
+// reduction recipe must be consumed successfully before GPU lowering.
 // CHECK-NOT: acc.reduction.recipe
 // CHECK-LABEL: func.func @serial_reduction
 // CHECK-NOT: acc.serial
 // CHECK: acc.kernel_environment
-// CHECK: acc.compute_region
-// CHECK: acc.reduction_init
-// CHECK: acc.reduction_combine_region
+// CHECK: gpu.launch_func @serial_reduction_kernel::@serial_reduction_kernel
+// CHECK: gpu.module @serial_reduction_kernel
+// CHECK: gpu.func @serial_reduction_kernel
+// CHECK: fir.load
+// CHECK: arith.addf
+// CHECK: fir.store
 
 acc.reduction.recipe @reduction_add_ref_f64 : !fir.ref<f64> reduction_operator <add> init {
 ^bb0(%arg0: !fir.ref<f64>):

@@ -21,6 +21,7 @@ add_flang_library(FIROpenACCTransforms
   MLIR_LIBS
   MLIRFuncDialect
   MLIRGPUDialect
+  MLIRGPUTransforms
   MLIRIR
   MLIROpenACCToSCF
   MLIROpenACCTransforms

@@ -14,6 +14,7 @@
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/OpenACC/Passes.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/OpenACC/Transforms/Passes.h"
 #include "mlir/Dialect/OpenMP/Transforms/Passes.h"
@@ -537,6 +538,7 @@ void registerFlangPipelinePasses() {
   fir::acc::registerFIROpenACCPasses();
   fir::acc::registerOpenACCFlangPipelines();
   mlir::acc::registerOpenACCPasses();
+  mlir::registerGpuKernelOutliningPass();
   mlir::registerConvertOpenACCToSCFPass();
 }
 

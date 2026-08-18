@@ -61,6 +61,23 @@ struct OpenACCFlangPipelineOptions
       *this, "ignore-default-none",
       llvm::cl::desc("Generate implicit data under verified default(none)"),
       llvm::cl::init(false)};
+
+  PassOptions::Option<int64_t> maxWorkgroupSharedMemory{
+      *this, "max-workgroup-shared-memory",
+      llvm::cl::desc("Maximum workgroup shared memory budget in bytes"),
+      llvm::cl::init(49152)};
+  PassOptions::Option<int64_t> maxThreadPrivateStack{
+      *this, "max-thread-private-stack",
+      llvm::cl::desc("Maximum thread-private stack allocation in bytes"),
+      llvm::cl::init(16384)};
+  PassOptions::Option<int64_t> subgroupSize{
+      *this, "subgroup-size",
+      llvm::cl::desc("Subgroup size used for GPU dimension alignment"),
+      llvm::cl::init(32)};
+  PassOptions::Option<std::string> dataLayoutStr{
+      *this, "data-layout-str",
+      llvm::cl::desc("Data layout attached to outlined GPU modules"),
+      llvm::cl::init("")};
 };
 
 /// Build the Flang OpenACC pipeline.

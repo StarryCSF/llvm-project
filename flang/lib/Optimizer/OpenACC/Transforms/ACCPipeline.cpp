@@ -10,11 +10,26 @@
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/OpenACC/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 
 using namespace mlir;
+
+namespace {
+
+mlir::acc::ACCCGToGPUOptions
+getCodegenOptions(const fir::acc::OpenACCFlangPipelineOptions &options) {
+  mlir::acc::ACCCGToGPUOptions codegenOptions;
+  codegenOptions.deviceType = options.deviceType;
+  codegenOptions.maxWorkgroupSharedMemory = options.maxWorkgroupSharedMemory;
+  codegenOptions.maxThreadPrivateStack = options.maxThreadPrivateStack;
+  codegenOptions.subgroupSize = options.subgroupSize;
+  return codegenOptions;
+}
+
+} // namespace
 
 namespace fir::acc {
 
@@ -109,6 +124,21 @@ void buildOpenACCFlangPipeline(OpPassManager &pm,
   mlir::acc::ACCRoutineToGPUFuncOptions placementOptions;
   placementOptions.deviceType = options.deviceType;
   pm.addPass(mlir::acc::createACCRoutineToGPUFunc(placementOptions));
+
+  // Specialized routines are regular gpu.func operations after placement and
+  // must be lowered in place before outlining.
+  OpPassManager &deviceCodegenPM = pm.nest<gpu::GPUModuleOp>();
+  deviceCodegenPM.addNestedPass<gpu::GPUFuncOp>(
+      mlir::acc::createACCCGToGPU(getCodegenOptions(options)));
+
+  // Lower host compute regions only after routine placement, so staged
+  // routines are not mistaken for ordinary host compute constructs.
+  pm.addNestedPass<func::FuncOp>(
+      mlir::acc::createACCCGToGPU(getCodegenOptions(options)));
+
+  mlir::GpuKernelOutliningPassOptions outliningOptions;
+  outliningOptions.dataLayoutStr = options.dataLayoutStr;
+  pm.addPass(mlir::createGpuKernelOutliningPass(outliningOptions));
 
   pm.addPass(mlir::createConvertOpenACCToSCFPass());
 }
