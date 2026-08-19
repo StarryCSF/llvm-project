@@ -50,7 +50,7 @@ void mlir::configureOpenACCToLLVMConversionLegality(
       mlir::acc::ReductionAccumulateOp, mlir::acc::ReductionAccumulateArrayOp,
       mlir::acc::YieldOp, mlir::acc::FirstprivateMapInitialOp,
       mlir::acc::PrivatizeOp, mlir::acc::UnwrapPrivateOp,
-      mlir::acc::PrivateLocalOp,
+      mlir::acc::PrivateLocalOp, mlir::acc::AttachOp, mlir::acc::DetachOp,
       mlir::acc::SetOp, mlir::acc::WaitOp>(
       [&](mlir::Operation *op) {
         return typeConverter.isLegal(op->getOperandTypes()) &&
@@ -271,7 +271,8 @@ void mlir::populateOpenACCToLLVMConversionPatterns(
                           mlir::acc::ReductionAccumulateArrayOp, mlir::acc::LoopOp,
                           mlir::acc::FirstprivateMapInitialOp, mlir::acc::PrivatizeOp,
                           mlir::acc::UnwrapPrivateOp, mlir::acc::PrivateLocalOp,
-                          mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp>(
+                          mlir::acc::UpdateDeviceOp, mlir::acc::GetDevicePtrOp,
+                          mlir::acc::AttachOp, mlir::acc::DetachOp>(
       converter, patterns);
 }
 

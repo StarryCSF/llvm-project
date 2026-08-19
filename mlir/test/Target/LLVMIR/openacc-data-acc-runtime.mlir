@@ -27,7 +27,7 @@ llvm.func @testdataop_all_clauses(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
 // present PRESENT|NO_CREATE, nocreate NO_CREATE, deviceptr DEVPTR, attach none.
 // Exit: delete, copyout FROM|PTR_AND_OBJ, delete, present, delete, deviceptr, detach.
 // CHECK: @[[MAPTYPES:.*]] = private unnamed_addr constant [7 x i64] [i64 1, i64 0, i64 0, i64 1056768, i64 8192, i64 1024, i64 0]
-// CHECK: @[[END_MAPTYPES:.*]] = private unnamed_addr constant [7 x i64] [i64 8, i64 18, i64 8, i64 1056768, i64 8, i64 1040, i64 24]
+// CHECK: @[[END_MAPTYPES:.*]] = private unnamed_addr constant [7 x i64] [i64 8, i64 2, i64 8, i64 1056768, i64 8, i64 1040, i64 24]
 // CHECK-LABEL: define void @testdataop_all_clauses
 // CHECK: alloca [7 x ptr]
 // CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 7, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)

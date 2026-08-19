@@ -111,6 +111,42 @@ static llvm::Function *getAccWaitFunction(llvm::Module &module,
           .getCallee());
 }
 
+/// Get or create __tgt_acc_data_enter function declaration.
+static llvm::Function *getAccDataEnterFunction(llvm::Module &module,
+                                               llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction("__tgt_acc_data_enter",
+                               llvm::FunctionType::get(
+                                   llvm::Type::getVoidTy(ctx),
+                                   {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy,
+                                    ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+                                   false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_exit function declaration.
+static llvm::Function *getAccDataExitFunction(llvm::Module &module,
+                                              llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction("__tgt_acc_data_exit",
+                               llvm::FunctionType::get(
+                                   llvm::Type::getVoidTy(ctx),
+                                   {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy,
+                                    ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+                                   false))
+          .getCallee());
+}
+
 /// Get or create __tgt_acc_data_begin function declaration.
 static llvm::Function *getAccDataBeginFunction(llvm::Module &module,
                                                llvm::LLVMContext &ctx) {
@@ -185,20 +221,15 @@ static llvm::Value *createSourceLocationInfo(OpenACCIRBuilder &builder,
 }
 
 /// Return the runtime function used to lower the given operation.
-static llvm::Function *getAssociatedFunction(OpenACCIRBuilder &builder,
-                                             Operation *op) {
+static llvm::Function *getAssociatedFunction(Operation *op,
+                                             llvm::Module &module,
+                                             llvm::LLVMContext &ctx) {
   return llvm::TypeSwitch<Operation *, llvm::Function *>(op)
       .Case([&](acc::EnterDataOp) {
-        return builder.getOrCreateRuntimeFunctionPtr(
-            llvm::omp::OMPRTL___tgt_target_data_begin_mapper);
+        return getAccDataEnterFunction(module, ctx);
       })
       .Case([&](acc::ExitDataOp) {
-        return builder.getOrCreateRuntimeFunctionPtr(
-            llvm::omp::OMPRTL___tgt_target_data_end_mapper);
-      })
-      .Case([&](acc::UpdateOp) {
-        return builder.getOrCreateRuntimeFunctionPtr(
-            llvm::omp::OMPRTL___tgt_target_data_update_mapper);
+        return getAccDataExitFunction(module, ctx);
       });
   llvm_unreachable("Unknown OpenACC operation");
 }
@@ -551,34 +582,58 @@ processDataOperands(llvm::IRBuilderBase &builder,
                     acc::EnterDataOp op, SmallVector<uint64_t> &flags,
                     SmallVectorImpl<llvm::Constant *> &names,
                     struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
-  // TODO add `create_zero` and `attach` operands
-
   unsigned index = 0;
 
   // Create operands are handled as `alloc` call.
   // Copyin operands are handled as `to` call.
-  llvm::SmallVector<mlir::Value> create, copyin;
+  // Attach operands are handled as `attach` call.
+  // Create_zero operands are handled as `alloc` call with zero initialization.
+  llvm::SmallVector<mlir::Value> create, copyin, attachOperands,
+      createZeroOperands;
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
     if (auto createOp = dataOp.getDefiningOp<acc::CreateOp>()) {
-      create.push_back(createOp.getVarPtr());
+      if (createOp.isCreateZero()) {
+        createZeroOperands.push_back(createOp.getVarPtr());
+      } else {
+        create.push_back(createOp.getVarPtr());
+      }
     } else if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(
                    dataOp.getDefiningOp())) {
       copyin.push_back(copyinOp.getVarPtr());
+    } else if (auto attachOp = mlir::dyn_cast_or_null<acc::AttachOp>(
+                   dataOp.getDefiningOp())) {
+      attachOperands.push_back(attachOp.getVarPtr());
     }
   }
 
-  auto nbTotalOperands = create.size() + copyin.size();
+  auto nbTotalOperands = create.size() + copyin.size() +
+                         attachOperands.size() + createZeroOperands.size();
 
-  // Create operands are handled as `alloc` call.
+  // Create operands are handled as `alloc` call with PTR_AND_OBJ.
   if (failed(processOperands(builder, moduleTranslation, op, create,
-                             nbTotalOperands, kAccMapTypeNone, flags, names,
+                             nbTotalOperands,
+                             kAccMapTypeNone | kAccMapTypePtrAndObj, flags,
+                             names, index, mapperAllocas)))
+    return failure();
+
+  // Copyin operands are handled as `to` call with PTR_AND_OBJ.
+  if (failed(processOperands(builder, moduleTranslation, op, copyin,
+                             nbTotalOperands,
+                             kAccMapTypeTo | kAccMapTypePtrAndObj, flags, names,
                              index, mapperAllocas)))
     return failure();
 
-  // Copyin operands are handled as `to` call.
-  if (failed(processOperands(builder, moduleTranslation, op, copyin,
-                             nbTotalOperands, kAccMapTypeTo, flags, names,
-                             index, mapperAllocas)))
+  // Attach operands are handled as `attach` call (PTR_AND_OBJ only).
+  if (failed(processOperands(builder, moduleTranslation, op, attachOperands,
+                             nbTotalOperands, kAccMapTypePtrAndObj, flags,
+                             names, index, mapperAllocas)))
+    return failure();
+
+  // Create_zero operands are handled as `alloc` call with PTR_AND_OBJ.
+  if (failed(processOperands(
+          builder, moduleTranslation, op, createZeroOperands, nbTotalOperands,
+          kAccMapTypeNone | kAccMapTypePtrAndObj | kAccMapTypeInitZero, flags,
+          names, index, mapperAllocas)))
     return failure();
 
   return success();
@@ -591,72 +646,58 @@ processDataOperands(llvm::IRBuilderBase &builder,
                     acc::ExitDataOp op, SmallVector<uint64_t> &flags,
                     SmallVectorImpl<llvm::Constant *> &names,
                     struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
-  // TODO add `detach` operands
-
   unsigned index = 0;
 
-  llvm::SmallVector<mlir::Value> deleteOperands, copyoutOperands;
+  llvm::SmallVector<mlir::Value> deleteOperands, detachOperands;
+  // Keep track of copyout operations to check for zero modifier.
+  llvm::SmallVector<std::pair<mlir::Value, acc::CopyoutOp>> copyoutOperands;
   for (mlir::Value dataOp : op.getDataClauseOperands()) {
     if (auto devicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
             dataOp.getDefiningOp())) {
       for (auto &u : devicePtrOp.getAccPtr().getUses()) {
-        if (mlir::dyn_cast_or_null<acc::DeleteOp>(u.getOwner()))
+        if (auto deleteOp = mlir::dyn_cast_or_null<acc::DeleteOp>(u.getOwner()))
           deleteOperands.push_back(devicePtrOp.getVarPtr());
-        else if (mlir::dyn_cast_or_null<acc::CopyoutOp>(u.getOwner()))
-          copyoutOperands.push_back(devicePtrOp.getVarPtr());
+        else if (auto copyoutOp = mlir::dyn_cast_or_null<acc::CopyoutOp>(u.getOwner()))
+          copyoutOperands.emplace_back(devicePtrOp.getVarPtr(), copyoutOp);
+        else if (mlir::dyn_cast_or_null<acc::DetachOp>(u.getOwner()))
+          detachOperands.push_back(devicePtrOp.getVarPtr());
       }
     }
   }
 
-  auto nbTotalOperands = deleteOperands.size() + copyoutOperands.size();
+  auto nbTotalOperands = deleteOperands.size() + copyoutOperands.size() +
+                         detachOperands.size();
+  uint64_t finalizeFlag =
+      op.getFinalize() ? kAccMapTypeFinalize : kAccMapTypeNone;
 
-  // Delete operands are handled as `delete` call.
+  // Delete operands are handled as `delete` call, with the finalize flag
+  // if the exit_data operation has the finalize clause.
   if (failed(processOperands(builder, moduleTranslation, op, deleteOperands,
-                             nbTotalOperands, kAccMapTypeFinalize, flags, names, index,
-                             mapperAllocas)))
-    return failure();
-
-  // Copyout operands are handled as `from` call.
-  if (failed(processOperands(builder, moduleTranslation, op, copyoutOperands,
-                             nbTotalOperands, kAccMapTypeFrom, flags, names,
+                             nbTotalOperands,
+                             finalizeFlag | kAccMapTypePtrAndObj, flags, names,
                              index, mapperAllocas)))
     return failure();
 
-  return success();
-}
-
-/// Process data operands from acc::UpdateOp
-static LogicalResult
-processDataOperands(llvm::IRBuilderBase &builder,
-                    LLVM::ModuleTranslation &moduleTranslation,
-                    acc::UpdateOp op, SmallVector<uint64_t> &flags,
-                    SmallVectorImpl<llvm::Constant *> &names,
-                    struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
-  unsigned index = 0;
-
-  // Host operands are handled as `from` call.
-  // Device operands are handled as `to` call.
-  llvm::SmallVector<mlir::Value> from, to;
-  for (mlir::Value dataOp : op.getDataClauseOperands()) {
-    if (auto getDevicePtrOp = mlir::dyn_cast_or_null<acc::GetDevicePtrOp>(
-            dataOp.getDefiningOp())) {
-      from.push_back(getDevicePtrOp.getVarPtr());
-    } else if (auto updateDeviceOp =
-                   mlir::dyn_cast_or_null<acc::UpdateDeviceOp>(
-                       dataOp.getDefiningOp())) {
-      to.push_back(updateDeviceOp.getVarPtr());
-    }
+  // Copyout operands are handled as `from` call.
+  // Add kAccMapTypeInitZero for copyout(zero) modifier.
+  for (auto &[varPtr, copyoutOp] : copyoutOperands) {
+    uint64_t copyoutFlag = kAccMapTypeFrom | finalizeFlag | kAccMapTypePtrAndObj;
+    if (copyoutOp.isCopyoutZero())
+      copyoutFlag |= kAccMapTypeInitZero;
+    if (failed(processOperands(builder, moduleTranslation, op,
+                               mlir::ValueRange(varPtr),
+                               nbTotalOperands, copyoutFlag, flags, names,
+                               index, mapperAllocas)))
+      return failure();
   }
 
-  if (failed(processOperands(builder, moduleTranslation, op, from, from.size(),
-                             kAccMapTypeFrom, flags, names, index,
-                             mapperAllocas)))
+  // Detach operands are handled as `detach` call (FINALIZE | PTR_AND_OBJ).
+  if (failed(processOperands(builder, moduleTranslation, op, detachOperands,
+                             nbTotalOperands,
+                             finalizeFlag | kAccMapTypePtrAndObj,
+                             flags, names, index, mapperAllocas)))
     return failure();
 
-  if (failed(processOperands(builder, moduleTranslation, op, to, to.size(),
-                             kAccMapTypeTo, flags, names, index,
-                             mapperAllocas)))
-    return failure();
   return success();
 }
 
@@ -717,7 +758,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
         copyinOps.push_back({copyinOp, copyinOp.getVarPtr()});
     } else if (auto createOp = mlir::dyn_cast_or_null<acc::CreateOp>(
                    dataOp.getDefiningOp())) {
-      if (createOp.getDataClause() == acc::DataClause::acc_copyout) {
+      if (createOp.getDataClause() == acc::DataClause::acc_copyout ||
+          createOp.getDataClause() == acc::DataClause::acc_copyout_zero) {
         copyoutOps.push_back({createOp, createOp.getVarPtr()});
       } else {
         createOps.push_back({createOp, createOp.getVarPtr()});
@@ -833,8 +875,18 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // copyout: entry PTR_AND_OBJ, exit FROM|PTR_AND_OBJ (acc.copyout).
   // Bounded sections strip PTR_AND_OBJ so ArgBasePtr stays null at the end.
+  // copyout(zero) adds kAccMapTypeInitZero to zero the device memory after copy.
+  // Scalar types also strip PTR_AND_OBJ (handled in processDataOperandWithBounds).
   for (auto &info : copyoutOps) {
     uint64_t endFlag = kAccMapTypeFrom | kAccMapTypePtrAndObj;
+    // copyoutOps stores CreateOp (entry), check for zero modifier
+    if (auto createOp = mlir::dyn_cast_or_null<acc::CreateOp>(info.op)) {
+      if (createOp.isCreateZero())
+        endFlag |= kAccMapTypeInitZero;
+      // Strip PTR_AND_OBJ for scalar types (matching entry behavior)
+      if (createOp.getVarType() && isa<IntegerType, FloatType>(createOp.getVarType()))
+        endFlag &= ~kAccMapTypePtrAndObj;
+    }
     if (!acc::getBounds(info.op).empty())
       endFlag &= ~kAccMapTypePtrAndObj;
     endFlags.push_back(endFlag);
@@ -850,8 +902,15 @@ static LogicalResult convertDataOp(acc::DataOp &op,
 
   // copy: entry TO|PTR_AND_OBJ, exit FROM|PTR_AND_OBJ (acc.copyout).
   // Bounded sections strip PTR_AND_OBJ so ArgBasePtr stays null at the end.
+  // copy(zero) adds kAccMapTypeInitZero to zero the device memory after copy.
   for (auto &info : copyOps) {
     uint64_t endFlag = kAccMapTypeFrom | kAccMapTypePtrAndObj;
+    // Check if original clause was copy with zero modifier (stored in copyinOp)
+    if (auto copyinOp = mlir::dyn_cast_or_null<acc::CopyinOp>(info.op))
+      if (copyinOp.getModifiersAttr() &&
+          acc::bitEnumContainsAny(copyinOp.getModifiers(),
+                                  acc::DataClauseModifier::zero))
+        endFlag |= kAccMapTypeInitZero;
     if (!acc::getBounds(info.op).empty())
       endFlag &= ~kAccMapTypePtrAndObj;
     endFlags.push_back(endFlag);
@@ -1068,12 +1127,12 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
 
   auto *srcLocInfo = createSourceLocationInfo(*accBuilder, op);
-  auto *mapperFunc = getAssociatedFunction(*accBuilder, op);
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+  auto *mapperFunc = getAssociatedFunction(op, *module, ctx);
 
   // Number of arguments in the enter_data operation.
   unsigned totalNbOperand = op.getNumDataOperands();
-
-  llvm::LLVMContext &ctx = builder.getContext();
 
   struct OpenACCIRBuilder::MapperAllocas mapperAllocas;
   OpenACCIRBuilder::InsertPointTy allocaIP(
@@ -1101,9 +1160,106 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
       llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), totalNbOperand),
       mapnames, /*Idx0=*/0, /*Idx1=*/0);
 
-  accBuilder->emitMapperCall(builder.saveIP(), mapperFunc, srcLocInfo,
-                             maptypesArg, mapnamesArg, mapperAllocas,
-                             kDefaultDevice, totalNbOperand);
+  auto *nullPtr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+  auto *flagsVal = builder.getInt64(0);
+  auto *deviceTypeVal = builder.getInt64(0);
+  auto *argNumVal = builder.getInt32(totalNbOperand);
+
+  // Get async value based on operation type
+  llvm::Value *asyncVal = builder.getInt64(-1);
+  if constexpr (std::is_same_v<OpTy, acc::EnterDataOp> ||
+                std::is_same_v<OpTy, acc::ExitDataOp>) {
+    if (op.getAsyncOperand()) {
+      llvm::Value *asyncValue =
+          moduleTranslation.lookupValue(op.getAsyncOperand());
+      if (asyncValue) {
+        if (!asyncValue->getType()->isIntegerTy(64))
+          asyncValue =
+              builder.CreateIntCast(asyncValue, builder.getInt64Ty(), true);
+        asyncVal = asyncValue;
+      }
+    } else if (op.getAsync()) {
+      asyncVal = builder.getInt64(-2);
+    }
+  }
+
+  // Emit wait call if needed (for EnterDataOp and ExitDataOp)
+  if constexpr (std::is_same_v<OpTy, acc::EnterDataOp> ||
+                std::is_same_v<OpTy, acc::ExitDataOp>) {
+    if (!op.getWaitOperands().empty() || op.getWait()) {
+      uint32_t waitNum = op.getWaitOperands().size();
+      llvm::Value *waitList = nullPtr;
+      if (waitNum != 0) {
+        auto *arrayType =
+            llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), waitNum);
+        waitList = builder.CreateAlloca(arrayType);
+        for (auto [index, waitOperand] :
+             llvm::enumerate(op.getWaitOperands())) {
+          llvm::Value *waitValue = moduleTranslation.lookupValue(waitOperand);
+          if (!waitValue) {
+            op.emitError("could not find LLVM value for wait operand") << index;
+            return failure();
+          }
+          if (!waitValue->getType()->isIntegerTy(64))
+            waitValue =
+                builder.CreateIntCast(waitValue, builder.getInt64Ty(), true);
+          llvm::Value *element = builder.CreateInBoundsGEP(
+              arrayType, waitList,
+              {builder.getInt32(0), builder.getInt32(index)});
+          builder.CreateStore(waitValue, element);
+        }
+      }
+      llvm::Value *deviceNum = builder.getInt32(-1);
+      if (op.getWaitDevnum()) {
+        llvm::Value *devnum = moduleTranslation.lookupValue(op.getWaitDevnum());
+        if (devnum) {
+          if (!devnum->getType()->isIntegerTy(32))
+            devnum = builder.CreateIntCast(devnum, builder.getInt32Ty(), true);
+          deviceNum = devnum;
+        }
+      }
+      builder.CreateCall(getAccWaitFunction(*module, ctx),
+                         {srcLocInfo, builder.getInt64(0), builder.getInt64(0),
+                          deviceNum, builder.getInt32(waitNum), waitList,
+                          asyncVal});
+    }
+  }
+
+  // Helper lambda to emit the data call
+  auto emitCall = [&]() {
+    builder.CreateCall(mapperFunc,
+                       {srcLocInfo, flagsVal, deviceTypeVal, argNumVal,
+                        mapperAllocas.ArgsBase, mapperAllocas.Args,
+                        mapperAllocas.ArgSizes, maptypesArg, mapnamesArg,
+                        nullPtr, nullPtr, asyncVal});
+  };
+
+  // Handle if clause
+  if constexpr (std::is_same_v<OpTy, acc::EnterDataOp> ||
+                std::is_same_v<OpTy, acc::ExitDataOp>) {
+    if (op.getIfCond()) {
+      llvm::Value *cond = moduleTranslation.lookupValue(op.getIfCond());
+      if (!cond) {
+        op.emitError("could not find LLVM value for if condition");
+        return failure();
+      }
+      llvm::Function *function = builder.GetInsertBlock()->getParent();
+      llvm::BasicBlock *thenBlock =
+          llvm::BasicBlock::Create(ctx, "acc.standalone.then", function);
+      llvm::BasicBlock *endBlock =
+          llvm::BasicBlock::Create(ctx, "acc.standalone.end", function);
+      builder.CreateCondBr(cond, thenBlock, endBlock);
+      builder.SetInsertPoint(thenBlock);
+      emitCall();
+      builder.CreateBr(endBlock);
+      builder.SetInsertPoint(endBlock);
+    } else {
+      emitCall();
+    }
+  } else {
+    emitCall();
+  }
 
   return success();
 }
@@ -1421,8 +1577,10 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                                         moduleTranslation);
       })
       .Case([&](acc::UpdateOp updateOp) {
-        return convertStandaloneDataOp<acc::UpdateOp>(updateOp, builder,
-                                                      moduleTranslation);
+        // TODO: lower acc.update to __tgt_acc_data_update.
+        return updateOp.emitError(
+                   "acc.update lowering to LLVM IR is not supported yet"),
+               failure();
       })
       .Case([&](acc::InitOp initOp) {
         return convertInitOp(initOp, builder, moduleTranslation);
