@@ -293,6 +293,10 @@ struct FrontendOptions {
   // Language features
   common::LanguageFeatureControl features;
 
+  /// OpenACC NVPTX target architecture resolved by the driver. This is
+  /// independent of the host target configuration.
+  std::string openACCOffloadTargetArch;
+
   // Source file encoding
   Fortran::parser::Encoding encoding{Fortran::parser::Encoding::UTF_8};
 

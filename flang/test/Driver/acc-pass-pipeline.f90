@@ -1,10 +1,11 @@
 ! Verify that -fopenacc enables the native OpenACC pipeline by
 ! default and that --disable-acc-pipeline disables all OpenACC passes.
 
-! RUN: %flang_fc1 -fopenacc -emit-llvm \
+! RUN: %flang_fc1 -fopenacc -openacc-target-arch=sm_86 -emit-llvm \
 ! RUN:   -mmlir --mlir-print-ir-before=acc-declare-action-conversion,acc-implicit-routine,fir-acc-recipe-bufferization,acc-recipe-materialization,acc-compute-lowering,acc-cg-to-gpu,gpu-kernel-outlining,convert-openacc-to-scf \
 ! RUN:   -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=DEFAULT
-! RUN: %flang_fc1 -fopenacc -emit-llvm -mmlir --disable-acc-pipeline \
+! RUN: %flang_fc1 -fopenacc -openacc-target-arch=sm_86 -emit-llvm \
+! RUN:   -mmlir --disable-acc-pipeline \
 ! RUN:   -mmlir --mlir-print-ir-before=acc-initialize-fir-analyses,acc-declare-action-conversion,fir-acc-recipe-bufferization,acc-recipe-materialization,acc-compute-lowering,acc-cg-to-gpu,gpu-kernel-outlining,convert-openacc-to-scf \
 ! RUN:   -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=DISABLED --allow-empty
 ! RUN: %flang_fc1 -emit-llvm \

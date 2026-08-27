@@ -24,6 +24,7 @@
 #include "clang/Basic/DiagnosticDriver.h"
 #include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Basic/DiagnosticOptions.h"
+#include "clang/Basic/OffloadArch.h"
 #include "clang/Driver/CommonArgs.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Options/OptionUtils.h"
@@ -1204,9 +1205,50 @@ static bool parseDialectArgs(CompilerInvocation &res, llvm::opt::ArgList &args,
   }
 
   // -fopenacc
-  if (args.hasArg(clang::options::OPT_fopenacc)) {
+  const bool enableOpenACC = args.hasArg(clang::options::OPT_fopenacc);
+  if (enableOpenACC) {
     res.getFrontendOpts().features.Enable(
         Fortran::common::LanguageFeature::OpenACC);
+  }
+
+  const bool needsOpenACCDeviceCode = [&]() {
+    switch (res.getFrontendOpts().programAction) {
+    case EmitLLVM:
+    case EmitLLVMBitcode:
+    case EmitObj:
+    case EmitAssembly:
+      return true;
+    default:
+      return false;
+    }
+  }();
+  const bool hasOpenACCArchitecture =
+      args.hasArgNoClaim(clang::options::OPT_openacc_target_arch);
+  std::vector<std::string> openACCArchitectures =
+      args.getAllArgValues(clang::options::OPT_openacc_target_arch);
+  if (hasOpenACCArchitecture) {
+    if (!enableOpenACC) {
+      const llvm::opt::Arg *architecture =
+          args.getLastArg(clang::options::OPT_openacc_target_arch);
+      diags.Report(clang::diag::err_drv_argument_only_allowed_with)
+          << architecture->getAsString(args) << "-fopenacc";
+    } else if (openACCArchitectures.size() > 1) {
+      diags.Report(clang::diag::err_drv_only_one_offload_arch_supported)
+          << "OpenACC";
+    } else if (openACCArchitectures.empty() ||
+               !clang::IsNVIDIAOffloadArch(
+                   clang::StringToOffloadArch(openACCArchitectures.front()))) {
+      diags.Report(clang::diag::err_drv_offload_bad_gpu_arch)
+          << "OpenACC"
+          << (openACCArchitectures.empty() ? "" : openACCArchitectures.front());
+    } else {
+      res.getFrontendOpts().openACCOffloadTargetArch =
+          openACCArchitectures.front();
+    }
+  } else if (enableOpenACC) {
+    if (needsOpenACCDeviceCode)
+      diags.Report(clang::diag::err_drv_offload_missing_gpu_arch)
+          << "OpenACC" << "-fopenacc";
   }
 
   // -std=f2018

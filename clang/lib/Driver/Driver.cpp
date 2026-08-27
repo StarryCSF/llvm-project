@@ -913,6 +913,150 @@ getSystemOffloadArchs(Compilation &C, Action::OffloadKind Kind) {
   return GPUArchs;
 }
 
+static llvm::SmallVector<std::string>
+getOpenACCSystemOffloadArchs(Compilation &C) {
+  StringRef Program = C.getArgs().getLastArgValue(
+      options::OPT_offload_arch_tool_EQ, "offload-arch");
+  std::string Executable =
+      C.getDefaultToolChain().GetProgramPath(Program.str().c_str());
+  llvm::SmallVector<StringRef> Args{Executable, "--only=nvptx"};
+  auto StdoutOrErr = C.getDriver().executeProgram(Args);
+
+  SmallVector<std::string> GPUArchs;
+  if (!StdoutOrErr) {
+    C.getDriver().Diag(diag::err_drv_undetermined_gpu_arch)
+        << "OpenACC" << StdoutOrErr.takeError() << "--offload-arch";
+    return GPUArchs;
+  }
+
+  for (StringRef Arch : llvm::split((*StdoutOrErr)->getBuffer(), "\n")) {
+    Arch = Arch.trim();
+    if (!Arch.empty())
+      GPUArchs.push_back(Arch.str());
+  }
+
+  if (GPUArchs.empty())
+    C.getDriver().Diag(diag::err_drv_undetermined_gpu_arch)
+        << "OpenACC" << "No NVIDIA GPU detected in the system"
+        << "--offload-arch";
+
+  return GPUArchs;
+}
+
+static bool isCanonicalNVIDIAArch(StringRef Architecture) {
+  return IsNVIDIAOffloadArch(StringToOffloadArch(Architecture));
+}
+
+static bool hasCanonicalOpenACCArchSpelling(const Driver &D,
+                                            const DerivedArgList &Args,
+                                            const Arg &A) {
+  const Arg *SpelledArg = &A;
+  while (SpelledArg->getAlias())
+    SpelledArg = SpelledArg->getAlias();
+  if (SpelledArg->getSpelling() == "--offload-arch=")
+    return true;
+
+  D.Diag(diag::err_drv_argument_not_allowed_with)
+      << SpelledArg->getAsString(Args) << "-fopenacc";
+  return false;
+}
+
+static void addOpenACCTargetArchArg(Compilation &C, DerivedArgList &Args,
+                                    StringRef Architecture) {
+  const Option Opt =
+      C.getDriver().getOpts().getOption(options::OPT_openacc_target_arch);
+  Args.AddJoinedArg(nullptr, Opt, Architecture);
+}
+
+// OpenACC carries host and device IR through one Flang frontend action. Keep
+// architecture selection in the driver, but do not register a device toolchain
+// or construct a second frontend action.
+static bool prepareOpenACCOffloadArch(Compilation &C, DerivedArgList &Args,
+                                      const InputList &Inputs) {
+  if (!Args.hasArg(options::OPT_fopenacc))
+    return true;
+
+  const Driver &D = C.getDriver();
+  const bool HasFortranInput = llvm::any_of(Inputs, [](const InputTy &Input) {
+    return Input.first == types::TY_Fortran ||
+           Input.first == types::TY_PP_Fortran;
+  });
+  const bool NeedsDeviceCode =
+      HasFortranInput && D.getFinalPhase(Args) > phases::Compile;
+
+  if (const Arg *A = Args.getLastArg(options::OPT_no_offload_arch_EQ)) {
+    const Arg *SpelledArg = A;
+    while (SpelledArg->getAlias())
+      SpelledArg = SpelledArg->getAlias();
+    D.Diag(diag::err_drv_argument_not_allowed_with)
+        << SpelledArg->getAsString(Args) << "-fopenacc";
+    return false;
+  }
+
+  for (const Arg *A : Args.filtered(options::OPT_offload_arch_EQ))
+    if (!hasCanonicalOpenACCArchSpelling(D, Args, *A))
+      return false;
+
+  const bool HasArchOption = Args.hasArgNoClaim(options::OPT_offload_arch_EQ);
+  std::vector<std::string> Architectures =
+      Args.getAllArgValues(options::OPT_offload_arch_EQ);
+  Args.ClaimAllArgs(options::OPT_offload_arch_EQ);
+
+  if (HasArchOption && Architectures.empty()) {
+    D.Diag(diag::err_drv_offload_bad_gpu_arch) << "OpenACC" << "";
+    return false;
+  }
+  if (Architectures.size() > 1) {
+    D.Diag(diag::err_drv_only_one_offload_arch_supported) << "OpenACC";
+    return false;
+  }
+
+  // Language-only actions neither require nor probe a device. Validate a
+  // concrete architecture if one was provided, but leave `native` unresolved.
+  if (!NeedsDeviceCode) {
+    if (!Architectures.empty() && Architectures.front() != "native" &&
+        !isCanonicalNVIDIAArch(Architectures.front())) {
+      D.Diag(diag::err_drv_offload_bad_gpu_arch)
+          << "OpenACC" << Architectures.front();
+      return false;
+    }
+    return true;
+  }
+
+  std::string Architecture;
+  if (Architectures.empty() || Architectures.front() == "native") {
+    std::set<std::string> DetectedArchitectures;
+    for (StringRef Detected : getOpenACCSystemOffloadArchs(C)) {
+      Detected = Detected.trim();
+      if (Detected.empty())
+        continue;
+      if (!isCanonicalNVIDIAArch(Detected)) {
+        D.Diag(diag::err_drv_offload_bad_gpu_arch) << "OpenACC" << Detected;
+        return false;
+      }
+      DetectedArchitectures.insert(Detected.str());
+    }
+
+    // getOpenACCSystemOffloadArchs has already diagnosed an empty result.
+    if (DetectedArchitectures.empty())
+      return false;
+    if (DetectedArchitectures.size() != 1) {
+      D.Diag(diag::err_drv_only_one_offload_arch_supported) << "OpenACC";
+      return false;
+    }
+    Architecture = *DetectedArchitectures.begin();
+  } else {
+    Architecture = Architectures.front();
+    if (!isCanonicalNVIDIAArch(Architecture)) {
+      D.Diag(diag::err_drv_offload_bad_gpu_arch) << "OpenACC" << Architecture;
+      return false;
+    }
+  }
+
+  addOpenACCTargetArchArg(C, Args, Architecture);
+  return true;
+}
+
 using TripleSet = std::multiset<llvm::Triple>;
 
 // Attempts to infer the correct offloading toolchain triple by looking at the
@@ -1036,7 +1180,9 @@ void Driver::CreateOffloadingDeviceToolChains(Compilation &C,
                                 options::OPT_fno_openmp, false) &&
        (C.getInputArgs().hasArg(options::OPT_offload_targets_EQ) ||
         (C.getInputArgs().hasArg(options::OPT_offload_arch_EQ) &&
-         !(IsCuda || IsHIP))));
+         !(IsCuda || IsHIP ||
+           (IsFlangMode() &&
+            C.getInputArgs().hasArg(options::OPT_fopenacc))))));
 
   llvm::SmallSet<Action::OffloadKind, 4> Kinds;
   const std::pair<bool, Action::OffloadKind> ActiveKinds[] = {
@@ -1791,6 +1937,11 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
       BuildInputs(C->getDefaultToolChain(), TranslatedLinkerIns, Inputs);
     }
   }
+
+  // Resolve OpenACC's architecture before another offload model can consume
+  // the public --offload-arch option.
+  if (IsFlangMode() && !prepareOpenACCOffloadArch(*C, C->getArgs(), Inputs))
+    return C;
 
   // Populate the tool chains for the offloading devices, if any.
   CreateOffloadingDeviceToolChains(*C, Inputs);

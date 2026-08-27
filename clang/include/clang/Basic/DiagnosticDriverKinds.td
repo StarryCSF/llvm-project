@@ -60,6 +60,8 @@ def err_drv_cuda_bad_gpu_arch : Error<"unsupported CUDA gpu architecture: %0">;
 def err_drv_offload_bad_gpu_arch : Error<"unsupported %0 gpu architecture: %1">;
 def err_drv_offload_missing_gpu_arch : Error<
   "must pass in an explicit %0 gpu architecture to '%1'">;
+def err_drv_only_one_offload_arch_supported : Error<
+  "only one %0 gpu architecture is supported">;
 def err_drv_no_cuda_installation : Error<
   "cannot find CUDA installation; provide its path via '--cuda-path', or pass "
   "'-nocudainc' to build without CUDA includes">;

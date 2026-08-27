@@ -414,6 +414,9 @@ def fno_reformat : Flag<["-"], "fno-reformat">, Group<Preprocessor_Group>,
 def fpreprocess_include_lines : Flag<["-"], "fpreprocess-include-lines">, Group<Preprocessor_Group>,
   HelpText<"Treat INCLUDE lines like #include directives in -E mode">;
 defm analyzed_objects_for_unparse : OptOutFC1FFlag<"analyzed-objects-for-unparse", "", "Do not use the analyzed objects when unparsing">;
+def openacc_target_arch : Joined<["-"], "openacc-target-arch=">,
+  Flags<[HelpHidden]>,
+  HelpText<"Set the OpenACC NVPTX target architecture">;
 def foffload_device : Flag<["-"], "foffload-device">, Group<f_Group>, Flags<[HelpHidden]>;
 
 def emit_fir : Flag<["-"], "emit-fir">, Group<Action_Group>,
