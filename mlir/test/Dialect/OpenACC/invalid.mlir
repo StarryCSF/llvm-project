@@ -984,3 +984,16 @@ func.func @verify_parallel_async_missing_device_type(%arg0: i64) {
   }) : (i64) -> ()
   return
 }
+
+// -----
+
+func.func @verify_declare_exit_invalid_token(%arg0: memref<i32>) {
+  %0 = acc.create varPtr(%arg0 : memref<i32>) -> memref<i32>
+  acc.declare_enter dataOperands(%0 : memref<i32>)
+  %t = "builtin.unrealized_conversion_cast"() : () -> !acc.declare_token
+// expected-error @below {{token must be produced by acc.declare_enter}}
+  acc.declare_exit token(%t) dataOperands(%0 : memref<i32>)
+  return
+}
+
+// -----

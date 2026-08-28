@@ -4517,8 +4517,8 @@ checkDeclareOperands(Op &op, const mlir::ValueRange &operands,
 
   for (mlir::Value operand : operands) {
     if (isa<BlockArgument>(operand) ||
-        !mlir::isa<acc::CopyinOp, acc::CopyoutOp, acc::CreateOp,
-                   acc::DevicePtrOp, acc::GetDevicePtrOp, acc::PresentOp,
+        !mlir::isa<acc::CopyinOp, acc::CreateOp, acc::DevicePtrOp,
+                   acc::GetDevicePtrOp, acc::PresentOp,
                    acc::DeclareDeviceResidentOp, acc::DeclareLinkOp>(
             operand.getDefiningOp()))
       return op.emitError(
@@ -4549,9 +4549,12 @@ LogicalResult acc::DeclareEnterOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult acc::DeclareExitOp::verify() {
-  if (getToken())
+  if (Value token = getToken()) {
+    if (!isa_and_nonnull<acc::DeclareEnterOp>(token.getDefiningOp()))
+      return emitError("token must be produced by acc.declare_enter");
     return checkDeclareOperands(*this, this->getDataClauseOperands(),
                                 /*requireAtLeastOneOperand=*/false);
+  }
   return checkDeclareOperands(*this, this->getDataClauseOperands());
 }
 

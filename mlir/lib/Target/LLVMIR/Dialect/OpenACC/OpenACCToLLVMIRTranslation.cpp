@@ -129,6 +129,25 @@ static llvm::Function *getAccDataEnterFunction(llvm::Module &module,
           .getCallee());
 }
 
+/// Get or create __tgt_acc_declare function declaration.
+static llvm::Function *getAccDeclareFunction(llvm::Module &module,
+                                             llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction(
+              "__tgt_acc_declare",
+              llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                      {identTy, i64Ty, i64Ty, i32Ty, ptrTy,
+                                       ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, ptrTy,
+                                       i64Ty, ptrTy},
+                                      false))
+          .getCallee());
+}
+
 /// Get or create __tgt_acc_data_exit function declaration.
 static llvm::Function *getAccDataExitFunction(llvm::Module &module,
                                               llvm::LLVMContext &ctx) {
@@ -418,6 +437,13 @@ processDataOperandWithBounds(llvm::IRBuilderBase &builder,
   } else if (auto deviceptrOp = mlir::dyn_cast_or_null<acc::DevicePtrOp>(dataOp)) {
     bounds = deviceptrOp.getBounds();
     varType = deviceptrOp.getVarType();
+  } else if (auto deviceResidentOp =
+                 mlir::dyn_cast_or_null<acc::DeclareDeviceResidentOp>(dataOp)) {
+    bounds = deviceResidentOp.getBounds();
+    varType = deviceResidentOp.getVarType();
+  } else if (auto linkOp = mlir::dyn_cast_or_null<acc::DeclareLinkOp>(dataOp)) {
+    bounds = linkOp.getBounds();
+    varType = linkOp.getVarType();
   } else if (auto attachOp = mlir::dyn_cast_or_null<acc::AttachOp>(dataOp)) {
     bounds = attachOp.getBounds();
     varType = attachOp.getVarType();
@@ -1681,6 +1707,399 @@ static LogicalResult convertWaitOp(acc::WaitOp op,
   return success();
 }
 
+/// Convert acc.declare_enter using the structured reference counter runtime
+/// ABI.
+static LogicalResult
+convertDeclareEnterOp(acc::DeclareEnterOp op, llvm::IRBuilderBase &builder,
+                      LLVM::ModuleTranslation &moduleTranslation) {
+  auto enclosingFuncOp = op.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  unsigned totalNbOperand = 0;
+  for (Value data : op.getDataClauseOperands()) {
+    Operation *entry = data.getDefiningOp();
+    if (!entry)
+      return op.emitError("declare operand has no defining operation");
+    auto clause = acc::getDataClause(entry);
+    if (!clause)
+      return op.emitError("declare operand has no data clause");
+    if (*clause != acc::DataClause::acc_deviceptr &&
+        *clause != acc::DataClause::acc_declare_link &&
+        *clause != acc::DataClause::acc_getdeviceptr)
+      ++totalNbOperand;
+  }
+
+  if (totalNbOperand == 0)
+    return success();
+
+  OpenACCIRBuilder::MapperAllocas mapperAllocas;
+  OpenACCIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  accBuilder->createMapperAllocas(builder.saveIP(), allocaIP, totalNbOperand,
+                                  mapperAllocas);
+
+  SmallVector<uint64_t> flags;
+  SmallVector<llvm::Constant *> names;
+  unsigned index = 0;
+  for (Value data : op.getDataClauseOperands()) {
+    Operation *entry = data.getDefiningOp();
+    acc::DataClause clause = acc::getDataClause(entry).value();
+    if (clause == acc::DataClause::acc_deviceptr ||
+        clause == acc::DataClause::acc_declare_link ||
+        clause == acc::DataClause::acc_getdeviceptr)
+      continue;
+
+    uint64_t flag = kAccMapTypePtrAndObj;
+    switch (clause) {
+    case acc::DataClause::acc_copy:
+    case acc::DataClause::acc_copyin:
+    case acc::DataClause::acc_copyin_readonly:
+      flag |= kAccMapTypeTo;
+      break;
+    case acc::DataClause::acc_present:
+      flag |= kAccMapTypePresent | kAccMapTypeNoCreate;
+      break;
+    case acc::DataClause::acc_declare_device_resident:
+      flag |= kAccMapTypeDeviceResident;
+      break;
+    case acc::DataClause::acc_copyout:
+    case acc::DataClause::acc_copyout_zero:
+    case acc::DataClause::acc_create:
+    case acc::DataClause::acc_create_zero:
+      break;
+    default:
+      return op.emitError("unsupported data clause on declare_enter");
+    }
+
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, entry, acc::getVarPtr(entry),
+            totalNbOperand, flag, flags, names, index, mapperAllocas)))
+      return failure();
+  }
+
+  auto *maptypes =
+      accBuilder->createOffloadMaptypes(flags, ".offload_maptypes_declare");
+  auto *maptypesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), totalNbOperand),
+      maptypes, 0, 0);
+  auto *mapnames =
+      accBuilder->createOffloadMapnames(names, ".offload_mapnames_declare");
+  auto *mapnamesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), totalNbOperand),
+      mapnames, 0, 0);
+  auto *nullPtr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+
+  builder.CreateCall(getAccDeclareFunction(*module, ctx),
+                     {createSourceLocationInfo(*accBuilder, op),
+                      builder.getInt64(0), builder.getInt64(0),
+                      builder.getInt32(totalNbOperand), mapperAllocas.ArgsBase,
+                      mapperAllocas.Args, mapperAllocas.ArgSizes, maptypesArg,
+                      mapnamesArg, nullPtr, nullPtr, builder.getInt64(-1),
+                      nullPtr});
+  return success();
+}
+
+/// Convert acc.declare_exit. Direct data-entry operands are the normal form
+/// emitted by Flang; getdeviceptr operands are also accepted for compatibility.
+static LogicalResult
+convertDeclareExitOp(acc::DeclareExitOp op, llvm::IRBuilderBase &builder,
+                     LLVM::ModuleTranslation &moduleTranslation) {
+  auto enclosingFuncOp = op.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  struct Mapping {
+    Operation *entry;
+    Value varPtr;
+    uint64_t flag;
+  };
+  SmallVector<Mapping> mappings;
+  OperandRange exitDataOperands = op.getDataClauseOperands();
+  // A token-only declare_exit inherits the data operands of its matching
+  // declare_enter so the structured reference count is properly released.
+  if (exitDataOperands.empty())
+    if (Value token = op.getToken())
+      if (auto enterOp = dyn_cast_or_null<acc::DeclareEnterOp>(
+              token.getDefiningOp()))
+        exitDataOperands = enterOp.getDataClauseOperands();
+  for (Value data : exitDataOperands) {
+    Operation *entry = data.getDefiningOp();
+    if (!entry)
+      return op.emitError("declare operand has no defining operation");
+    auto clause = acc::getDataClause(entry);
+    if (!clause)
+      return op.emitError("declare operand has no data clause");
+    if (*clause == acc::DataClause::acc_deviceptr ||
+        *clause == acc::DataClause::acc_declare_link ||
+        *clause == acc::DataClause::acc_getdeviceptr)
+      continue;
+
+    Value varPtr = acc::getVarPtr(entry);
+    Value accPtr = acc::getAccPtr(entry);
+    bool hasAction = false;
+    if (accPtr) {
+      for (OpOperand &use : accPtr.getUses()) {
+        if (isa<acc::CopyoutOp>(use.getOwner())) {
+          mappings.push_back(
+              {entry, varPtr, kAccMapTypeFrom | kAccMapTypePtrAndObj});
+          hasAction = true;
+        } else if (isa<acc::DeleteOp, acc::DetachOp>(use.getOwner())) {
+          mappings.push_back(
+              {entry, varPtr, kAccMapTypeFinalize | kAccMapTypePtrAndObj});
+          hasAction = true;
+        }
+      }
+    }
+
+    if (hasAction)
+      continue;
+    switch (*clause) {
+    case acc::DataClause::acc_copy:
+    case acc::DataClause::acc_copyout:
+    case acc::DataClause::acc_copyout_zero:
+      mappings.push_back(
+          {entry, varPtr, kAccMapTypeFrom | kAccMapTypePtrAndObj});
+      break;
+    case acc::DataClause::acc_present:
+      mappings.push_back(
+          {entry, varPtr,
+           kAccMapTypePresent | kAccMapTypeNoCreate | kAccMapTypePtrAndObj});
+      break;
+    case acc::DataClause::acc_copyin:
+    case acc::DataClause::acc_copyin_readonly:
+    case acc::DataClause::acc_create:
+    case acc::DataClause::acc_create_zero:
+    case acc::DataClause::acc_declare_device_resident:
+      mappings.push_back(
+          {entry, varPtr, kAccMapTypeFinalize | kAccMapTypePtrAndObj});
+      break;
+    default:
+      return op.emitError("unsupported data clause on declare_exit");
+    }
+  }
+
+  if (mappings.empty())
+    return success();
+
+  OpenACCIRBuilder::MapperAllocas mapperAllocas;
+  OpenACCIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  accBuilder->createMapperAllocas(builder.saveIP(), allocaIP, mappings.size(),
+                                  mapperAllocas);
+
+  SmallVector<uint64_t> flags;
+  SmallVector<llvm::Constant *> names;
+  unsigned index = 0;
+  for (const Mapping &mapping : mappings) {
+    if (isa<acc::GetDevicePtrOp>(mapping.entry)) {
+      if (failed(processOperands(builder, moduleTranslation, op,
+                                 ValueRange(mapping.varPtr), mappings.size(),
+                                 mapping.flag, flags, names, index,
+                                 mapperAllocas)))
+        return failure();
+    } else if (failed(processDataOperandWithBounds(
+                   builder, moduleTranslation, mapping.entry, mapping.varPtr,
+                   mappings.size(), mapping.flag, flags, names, index,
+                   mapperAllocas))) {
+      return failure();
+    }
+  }
+
+  auto *maptypes =
+      accBuilder->createOffloadMaptypes(flags, ".offload_maptypes_declare_end");
+  auto *maptypesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), mappings.size()),
+      maptypes, 0, 0);
+  auto *mapnames =
+      accBuilder->createOffloadMapnames(names, ".offload_mapnames_declare_end");
+  auto *mapnamesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), mappings.size()),
+      mapnames, 0, 0);
+  auto *nullPtr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+  // declare_enter uses structured reference counting through
+  // __tgt_acc_declare, so its matching exit must use the structured
+  // __tgt_acc_data_end entry point rather than dynamic __tgt_acc_data_exit.
+  builder.CreateCall(getAccDataEndFunction(*module, ctx),
+                     {createSourceLocationInfo(*accBuilder, op),
+                      builder.getInt64(0), builder.getInt64(0),
+                      builder.getInt32(mappings.size()), mapperAllocas.ArgsBase,
+                      mapperAllocas.Args, mapperAllocas.ArgSizes, maptypesArg,
+                      mapnamesArg, nullPtr, nullPtr, builder.getInt64(-1)});
+  return success();
+}
+
+/// Convert an acc.declare implicit region. Unlike acc.data, the entry uses
+/// the structured declare ABI and the region exit uses the structured data_end
+/// ABI.
+static LogicalResult
+convertDeclareOp(acc::DeclareOp op, llvm::IRBuilderBase &builder,
+                 LLVM::ModuleTranslation &moduleTranslation) {
+  auto enclosingFuncOp = op.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  struct Mapping {
+    Operation *entry;
+    Value varPtr;
+    uint64_t entryFlag;
+    uint64_t exitFlag;
+  };
+  SmallVector<Mapping> mappings;
+  for (Value data : op.getDataClauseOperands()) {
+    Operation *entry = data.getDefiningOp();
+    if (!entry)
+      return op.emitError("declare operand has no defining operation");
+    auto clause = acc::getDataClause(entry);
+    if (!clause)
+      return op.emitError("declare operand has no data clause");
+    if (*clause == acc::DataClause::acc_deviceptr ||
+        *clause == acc::DataClause::acc_declare_link)
+      continue;
+
+    uint64_t entryFlag = kAccMapTypePtrAndObj;
+    uint64_t exitFlag = kAccMapTypeFinalize | kAccMapTypePtrAndObj;
+    switch (*clause) {
+    case acc::DataClause::acc_copy:
+    case acc::DataClause::acc_copyin:
+    case acc::DataClause::acc_copyin_readonly:
+      entryFlag |= kAccMapTypeTo;
+      break;
+    case acc::DataClause::acc_copyout:
+    case acc::DataClause::acc_copyout_zero:
+      exitFlag = kAccMapTypeFrom | kAccMapTypePtrAndObj;
+      break;
+    case acc::DataClause::acc_present:
+      entryFlag |= kAccMapTypePresent | kAccMapTypeNoCreate;
+      exitFlag =
+          kAccMapTypePresent | kAccMapTypeNoCreate | kAccMapTypePtrAndObj;
+      break;
+    case acc::DataClause::acc_declare_device_resident:
+      entryFlag |= kAccMapTypeDeviceResident;
+      break;
+    case acc::DataClause::acc_create:
+    case acc::DataClause::acc_create_zero:
+      break;
+    default:
+      return op.emitError("unsupported data clause on declare");
+    }
+    mappings.push_back({entry, acc::getVarPtr(entry), entryFlag, exitFlag});
+  }
+
+  if (mappings.empty()) {
+    for (Block &bb : op.getRegion()) {
+      if (failed(
+              moduleTranslation.convertBlock(bb, bb.isEntryBlock(), builder)))
+        return failure();
+    }
+    return success();
+  }
+
+  OpenACCIRBuilder::MapperAllocas mapperAllocas;
+  OpenACCIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  accBuilder->createMapperAllocas(builder.saveIP(), allocaIP, mappings.size(),
+                                  mapperAllocas);
+
+  SmallVector<uint64_t> entryFlags;
+  SmallVector<llvm::Constant *> names;
+  unsigned index = 0;
+  for (const Mapping &mapping : mappings) {
+    if (failed(processDataOperandWithBounds(
+            builder, moduleTranslation, mapping.entry, mapping.varPtr,
+            mappings.size(), mapping.entryFlag, entryFlags, names, index,
+            mapperAllocas)))
+      return failure();
+  }
+
+  auto *maptypes = accBuilder->createOffloadMaptypes(
+      entryFlags, ".offload_maptypes_declare");
+  auto *maptypesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), mappings.size()),
+      maptypes, 0, 0);
+  auto *mapnames =
+      accBuilder->createOffloadMapnames(names, ".offload_mapnames_declare");
+  auto *mapnamesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), mappings.size()),
+      mapnames, 0, 0);
+  auto *nullPtr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+  builder.CreateCall(getAccDeclareFunction(*module, ctx),
+                     {createSourceLocationInfo(*accBuilder, op),
+                      builder.getInt64(0), builder.getInt64(0),
+                      builder.getInt32(mappings.size()), mapperAllocas.ArgsBase,
+                      mapperAllocas.Args, mapperAllocas.ArgSizes, maptypesArg,
+                      mapnamesArg, nullPtr, nullPtr, builder.getInt64(-1),
+                      nullPtr});
+
+  SmallVector<uint64_t> exitFlags;
+  for (const Mapping &mapping : mappings)
+    exitFlags.push_back(mapping.exitFlag);
+  auto *endMaptypes = accBuilder->createOffloadMaptypes(
+      exitFlags, ".offload_maptypes_declare_end");
+  auto *endMaptypesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), mappings.size()),
+      endMaptypes, 0, 0);
+
+  // An implicit declare region may be empty. In that case there is no block
+  // to branch to, but the structured mapping still needs to be ended.
+  if (op.getRegion().empty()) {
+    builder.CreateCall(
+        getAccDataEndFunction(*module, ctx),
+        {createSourceLocationInfo(*accBuilder, op), builder.getInt64(0),
+         builder.getInt64(0), builder.getInt32(mappings.size()),
+         mapperAllocas.ArgsBase, mapperAllocas.Args, mapperAllocas.ArgSizes,
+         endMaptypesArg, mapnamesArg, nullPtr, nullPtr, builder.getInt64(-1)});
+    return success();
+  }
+
+  llvm::BasicBlock *entryBlock = nullptr;
+  for (Block &bb : op.getRegion()) {
+    llvm::BasicBlock *llvmBB = llvm::BasicBlock::Create(
+        ctx, "acc.declare", builder.GetInsertBlock()->getParent());
+    if (!entryBlock)
+      entryBlock = llvmBB;
+    moduleTranslation.mapBlock(&bb, llvmBB);
+  }
+  llvm::BasicBlock *endBlock = llvm::BasicBlock::Create(
+      ctx, "acc.end_declare", builder.GetInsertBlock()->getParent());
+  auto afterDeclare = builder.saveIP();
+  builder.CreateBr(entryBlock);
+  builder.restoreIP(afterDeclare);
+
+  for (Block *bb : getBlocksSortedByDominance(op.getRegion())) {
+    if (failed(
+            moduleTranslation.convertBlock(*bb, bb->isEntryBlock(), builder)))
+      return failure();
+    if (!bb->getTerminator() ||
+        isa<acc::TerminatorOp, acc::YieldOp>(bb->getTerminator()))
+      builder.CreateBr(endBlock);
+  }
+  LLVM::detail::connectPHINodes(op.getRegion(), moduleTranslation);
+  builder.SetInsertPoint(endBlock);
+  builder.CreateCall(
+      getAccDataEndFunction(*module, ctx),
+      {createSourceLocationInfo(*accBuilder, op), builder.getInt64(0),
+       builder.getInt64(0), builder.getInt32(mappings.size()),
+       mapperAllocas.ArgsBase, mapperAllocas.Args, mapperAllocas.ArgSizes,
+       endMaptypesArg, mapnamesArg, nullPtr, nullPtr, builder.getInt64(-1)});
+  return success();
+}
+
 namespace {
 
 /// Implementation of the dialect interface that converts operations belonging
@@ -1708,6 +2127,9 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
   return llvm::TypeSwitch<Operation *, LogicalResult>(op)
       .Case([&](acc::DataOp dataOp) {
         return convertDataOp(dataOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::DeclareOp declareOp) {
+        return convertDeclareOp(declareOp, builder, moduleTranslation);
       })
       .Case([&](acc::HostDataOp hostDataOp) {
         return convertHostDataOp(hostDataOp, builder, moduleTranslation);
@@ -1737,6 +2159,14 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       })
       .Case([&](acc::WaitOp waitOp) {
         return convertWaitOp(waitOp, builder, moduleTranslation);
+      })
+      .Case([&](acc::DeclareEnterOp declareEnterOp) {
+        return convertDeclareEnterOp(declareEnterOp, builder,
+                                     moduleTranslation);
+      })
+      .Case([&](acc::DeclareExitOp declareExitOp) {
+        return convertDeclareExitOp(declareExitOp, builder,
+                                    moduleTranslation);
       })
       .Case<acc::TerminatorOp, acc::YieldOp>([](auto op) {
         // `yield` and `terminator` can be just omitted. The block structure was
@@ -1801,7 +2231,8 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
         return success();
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::PresentOp,
-            acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp>([&](auto op) {
+            acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp,
+            acc::DeclareDeviceResidentOp, acc::DeclareLinkOp>([&](auto op) {
         llvm::Value *varPtr = moduleTranslation.lookupValue(op.getVarPtr());
         if (!varPtr) {
           op.emitError("could not find LLVM value for varPtr");
