@@ -440,7 +440,10 @@ private:
       kernelModule = gpu::GPUModuleOp::create(builder, kernelFunc.getLoc(),
                                               kernelModuleName);
       // Add #nvvm.target so gpu-module-to-binary can compile the kernel.
-      auto nvvmTarget = mlir::NVVM::NVVMTargetAttr::get(context);
+      constexpr bool useSm86 = true; // TODO: Set to false for sm_70
+      StringRef chip = useSm86 ? "sm_86" : "sm_70";
+      auto nvvmTarget = mlir::NVVM::NVVMTargetAttr::get(
+          context, /*optLevel=*/2, "nvptx64-nvidia-cuda", chip);
       kernelModule.setTargetsAttr(
           builder.getArrayAttr({nvvmTarget}));
       // Add #gpu.select_object offloading handler so that
