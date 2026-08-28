@@ -22,7 +22,7 @@
 // RUN:   --fir-acc-pipeline='device-type=radeon' \
 // RUN:   -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-TARGET
 
-// PIPELINE: Pass Manager with 29 passes:
+// PIPELINE: Pass Manager with 30 passes:
 // PIPELINE-NEXT: builtin.module(
 // PIPELINE-NEXT: acc-initialize-fir-analyses,
 // PIPELINE-NEXT: acc-declare-action-conversion,
@@ -88,6 +88,7 @@
 // PIPELINE-NEXT: acc-cg-to-gpu{device-type=nvidia max-thread-private-stack=16384 max-workgroup-shared-memory=49152 subgroup-size=32}
 // PIPELINE-NEXT: ),
 // PIPELINE-NEXT: gpu-kernel-outlining{data-layout-str=},
+// PIPELINE-NEXT: acc-declare-ctor-dtor-conversion
 // PIPELINE-NEXT: convert-openacc-to-scf
 // PIPELINE-NEXT: )
 

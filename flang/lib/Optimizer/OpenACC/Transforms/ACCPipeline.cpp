@@ -140,6 +140,10 @@ void buildOpenACCFlangPipeline(OpPassManager &pm,
   outliningOptions.dataLayoutStr = options.dataLayoutStr;
   pm.addPass(mlir::createGpuKernelOutliningPass(outliningOptions));
 
+  // Convert acc.global_ctor and acc.global_dtor to LLVM functions and
+  // register them in llvm.mlir.global_ctors/dtors.
+  pm.addPass(mlir::acc::createACCDeclareCtorDtorConversion());
+
   pm.addPass(mlir::createConvertOpenACCToSCFPass());
 }
 
