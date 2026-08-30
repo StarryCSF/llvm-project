@@ -364,6 +364,17 @@ mlir::acc::getDominatingDataClauses(mlir::Operation *computeConstructOp,
     }
   });
 
+  // Data made present by an `enter data` construct that dominates the compute
+  // construct must also be reused by the implicit clauses (present semantics):
+  // generating a fresh copy would overwrite the device data and copy stale
+  // values back at the construct exit.
+  funcOp->walk([&](mlir::acc::EnterDataOp enterDataOp) {
+    if (domInfo.dominates(enterDataOp.getOperation(), computeConstructOp)) {
+      for (auto dataClause : enterDataOp.getDataClauseOperands())
+        dominatingDataClauses.insert(dataClause);
+    }
+  });
+
   return dominatingDataClauses.takeVector();
 }
 
