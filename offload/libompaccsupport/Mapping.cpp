@@ -582,6 +582,37 @@ int MappingInfoTy::deallocTgtPtrAndEntry(HostDataToTargetTy *Entry,
   return Ret;
 }
 
+void MappingInfoTy::eraseStaleOverlappingEntries(HDTTMapAccessorTy &HDTTMap,
+                                                 void *HstPtrBegin,
+                                                 int64_t Size) {
+  const uintptr_t ReqBegin = (uintptr_t)HstPtrBegin;
+  const uintptr_t ReqEnd = ReqBegin + (uint64_t)Size;
+
+  llvm::SmallVector<HostDataToTargetTy *> StaleEntries;
+  for (auto &It : *HDTTMap) {
+    HostDataToTargetTy *Entry = It.HDTT;
+    bool Overlaps = (uintptr_t)Entry->HstPtrBegin < ReqEnd &&
+                    (uintptr_t)Entry->HstPtrEnd > ReqBegin;
+    bool Contains = (uintptr_t)Entry->HstPtrBegin <= ReqBegin &&
+                    (uintptr_t)Entry->HstPtrEnd >= ReqEnd;
+    if (Overlaps && !Contains)
+      StaleEntries.push_back(Entry);
+  }
+
+  for (HostDataToTargetTy *Entry : StaleEntries) {
+    const int64_t EntrySize = Entry->HstPtrEnd - Entry->HstPtrBegin;
+    Entry->lock();
+    REPORT() << "Erasing stale mapping " << (void *)Entry->HstPtrBegin << " - "
+             << (void *)Entry->HstPtrEnd << " which partially overlaps the "
+             << "requested " << HstPtrBegin << " - " << (void *)ReqEnd
+             << " region and refers to reused host memory";
+    HDTTMap->erase(Entry);
+    if (deallocTgtPtrAndEntry(Entry, EntrySize) != OFFLOAD_SUCCESS)
+      REPORT() << "Failed to deallocate erased stale mapping "
+               << (void *)Entry->HstPtrBegin;
+  }
+}
+
 static void printNonContigCopyInfoImpl(int DeviceId, bool H2D,
                                        void *SrcPtrBegin, void *DstPtrBegin,
                                        const NonContigDescTy &CopyInfo,

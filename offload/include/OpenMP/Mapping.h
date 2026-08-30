@@ -711,6 +711,16 @@ struct MappingInfoTy {
   [[nodiscard]] int deallocTgtPtrAndEntry(HostDataToTargetTy *Entry,
                                           int64_t Size);
 
+  /// Erase map entries that partially overlap [\p HstPtrBegin, \p HstPtrBegin
+  /// + \p Size) without fully containing it. Two live host allocations never
+  /// partially overlap, so such entries refer to host memory that has been
+  /// reused since they were created (e.g. the stack frame of a previous acc_
+  /// runtime call whose entry was never released). Entries fully containing
+  /// the request are legal containers and are kept. The caller must hold
+  /// exclusive access via \p HDTTMap.
+  void eraseStaleOverlappingEntries(HDTTMapAccessorTy &HDTTMap,
+                                    void *HstPtrBegin, int64_t Size);
+
   int associatePtr(void *HstPtrBegin, void *TgtPtrBegin, int64_t Size);
   int disassociatePtr(void *HstPtrBegin);
 

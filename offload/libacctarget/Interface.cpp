@@ -532,7 +532,8 @@ template <typename SizeTy>
 void handleSingleDataEnd(ident_t *Loc, void *ArgBasePtr, void *ArgPtr,
                          SizeTy ArgSize, bool ForceDelete, bool IsNoCreate,
                          AccCopyOutType CopyType, AccRefCountingType MapType,
-                         AsyncInfoTy &AsyncInfo, DeviceTy &Device) {
+                         AsyncInfoTy &AsyncInfo, DeviceTy &Device,
+                         bool OptionalEntry = false) {
   int64_t DataSize;
   if constexpr (std::is_same<SizeTy, int64_t>::value) {
     DataSize = ArgSize;
@@ -551,8 +552,18 @@ void handleSingleDataEnd(ident_t *Loc, void *ArgBasePtr, void *ArgPtr,
   if (!TPR.isPresent()) {
     ODBG(ADT_Mapping) << "Mapping does not exist: "
                       << (IsNoCreate ? "is no_create" : "error");
-    if (Pedantic && !IsNoCreate)
-      REPORT_FATAL() << "Device mapping does not exist at " << Loc;
+    if (Pedantic && !IsNoCreate) {
+      if (OptionalEntry)
+        // Descriptor mappings have their own reference count and may already
+        // have been released by an earlier clause on the same variable, while
+        // the payload mapping is still alive. Their absence at data end is
+        // expected and harmless: there is no device data to copy back and no
+        // entry left to release.
+        REPORT_WARN() << "Optional device mapping does not exist at " << Loc
+                      << " - skipping";
+      else
+        REPORT_FATAL() << "Device mapping does not exist at " << Loc;
+    }
     return;
   }
 
@@ -879,6 +890,8 @@ struct ArgDescriptorsTy {
       assert(MemInfo.CopyDesc);
       ODBG() << "Will use non-contig copy.";
 
+      Device.getMappingInfo().eraseStaleOverlappingEntries(
+          HDTTMap, MemInfo.RawMemoryPtr, MemInfo.CopyDesc->getAllocSize());
       TargetPointerResultTy TPR = Device.getMappingInfo().getTargetPointer(
           HDTTMap, MemInfo.RawMemoryPtr, MemInfo.RawMemoryBasePtr, 0,
           &*MemInfo.CopyDesc, ArgName, HasFlagTo,
@@ -910,6 +923,11 @@ struct ArgDescriptorsTy {
         // Always copy the descriptor to device. It is needed regardless of the
         // user-specified TO/FROM, and regardless of whether no_create is on or
         // not as the no_create can refer to the raw memory in the descriptor.
+        // Stale mappings over reused host memory (e.g. the stack frame of a
+        // previous runtime call that was never released) would make this
+        // lookup fail with an explicit-extension error; drop them first.
+        Device.getMappingInfo().eraseStaleOverlappingEntries(
+            HDTTMap, DescriptorAddr, DescInfo.DescriptorSize);
         TargetPointerResultTy TPR = Device.getMappingInfo().getTargetPointer(
             HDTTMap, DescriptorAddr, DescriptorAddr, 0, (int64_t)DescInfo.DescriptorSize,
             ArgName, /*HasFlagTo=*/true,
@@ -932,6 +950,8 @@ struct ArgDescriptorsTy {
           if (MemInfo.CopyDesc) {
             MemTgtPtr = MapWithDesc(MemInfo, BasePtr, false);
           } else {
+            Device.getMappingInfo().eraseStaleOverlappingEntries(
+                HDTTMap, MemInfo.RawMemoryPtr, *MemInfo.RawMemorySize);
             TargetPointerResultTy TPR =
                 Device.getMappingInfo().getTargetPointer(
                     HDTTMap, MemInfo.RawMemoryPtr, BasePtr, 0,
@@ -999,6 +1019,8 @@ struct ArgDescriptorsTy {
         if (MemInfo.CopyDesc) {
           MapWithDesc(MemInfo, MemInfo.RawMemoryBasePtr, true);
         } else {
+          Device.getMappingInfo().eraseStaleOverlappingEntries(
+              HDTTMap, MemInfo.RawMemoryPtr, *MemInfo.RawMemorySize);
           TargetPointerResultTy TPR = Device.getMappingInfo().getTargetPointer(
               HDTTMap, MemInfo.RawMemoryPtr, MemInfo.RawMemoryBasePtr, 0,
               (int64_t)*MemInfo.RawMemorySize, ArgName, HasFlagTo,
@@ -1057,7 +1079,8 @@ struct ArgDescriptorsTy {
 
       handleSingleDataEnd<int64_t>(
           Loc, DescriptorAddr, DescriptorAddr, DescInfo.DescriptorSize,
-          ForceDelete, IsNoCreate, CopyType, MapType, AsyncInfo, Device);
+          ForceDelete, IsNoCreate, CopyType, MapType, AsyncInfo, Device,
+          /*OptionalEntry=*/true);
 
       if (MapInfo.Memory) {
         auto &MemInfo = *MapInfo.Memory;
@@ -1391,6 +1414,8 @@ void accTargetDataBegin(ident_t *Loc, void *ArgBasePtr, void *ArgPtr,
       // the parent for pointer attachment.
       void *MemTgtPtr = nullptr;
       {
+        Device.getMappingInfo().eraseStaleOverlappingEntries(HDTTMap, ArgPtr,
+                                                             ArgSize);
         TargetPointerResultTy TPR = Device.getMappingInfo().getTargetPointer(
             HDTTMap, ArgPtr, ArgPtr, 0, ArgSize, ArgName, HasFlagTo,
             /*HasFlagAlways=*/false, /*IsImplicit=*/false,
@@ -1438,6 +1463,8 @@ void accTargetDataBegin(ident_t *Loc, void *ArgBasePtr, void *ArgPtr,
       }
 
     } else {
+      Device.getMappingInfo().eraseStaleOverlappingEntries(HDTTMap, ArgPtr,
+                                                           ArgSize);
       TargetPointerResultTy TPR = Device.getMappingInfo().getTargetPointer(
           HDTTMap, ArgPtr, ArgPtr, 0, ArgSize, ArgName, HasFlagTo,
           /*HasFlagAlways=*/false, /*IsImplicit=*/false,
