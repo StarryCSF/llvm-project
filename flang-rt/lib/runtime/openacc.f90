@@ -728,7 +728,7 @@
 
           subroutine acc_set_default_async(async_arg) bind(c)
             use openacc_kinds
-            integer (acc_handle_kind) :: async_arg
+            integer (acc_handle_kind), value :: async_arg
           end subroutine acc_set_default_async
 
           subroutine acc_set_default_async_(async_arg) bind(c)

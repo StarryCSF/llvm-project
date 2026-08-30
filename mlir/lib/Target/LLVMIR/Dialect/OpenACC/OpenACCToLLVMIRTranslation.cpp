@@ -513,15 +513,15 @@ static llvm::Value *getI64BoundValue(llvm::IRBuilderBase &builder,
   return result;
 }
 
-/// Convert an OpenACC async operand to the runtime representation.  OpenACC
-/// uses -1 for synchronous execution and -2 for an async clause without an
-/// explicit queue value.
+/// Convert an OpenACC async operand to the runtime representation.  This must
+/// match offload/libacctarget/include/openacc.h: acc_async_sync is -1 and
+/// acc_async_noval is -4.
 static llvm::Value *getAsyncRuntimeValue(
     llvm::IRBuilderBase &builder, LLVM::ModuleTranslation &moduleTranslation,
     Value asyncValue, bool asyncOnly) {
   if (asyncValue)
     return getI64BoundValue(builder, moduleTranslation, asyncValue, -1);
-  return builder.getInt64(asyncOnly ? -2 : -1);
+  return builder.getInt64(asyncOnly ? -4 : -1);
 }
 
 /// Emit the full acctarget wait ABI call used by both explicit wait
@@ -2578,8 +2578,9 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
             } else if (kernelEnvOp.getAsyncOnly()) {
               // acc parallel async (no arg) = use default async queue
               // __tgt_acc_set_default_async has already been called,
-              // pass acc_async_noval (-2) to indicate async without explicit value
-              asyncArg = builder.getInt64(-2);
+              // pass acc_async_noval (-4, see offload's openacc.h) to indicate
+              // async without an explicit value
+              asyncArg = builder.getInt64(-4);
             }
 
             // Wait clauses synchronize the listed queues before entering the

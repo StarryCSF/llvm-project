@@ -1640,6 +1640,12 @@ void withDeviceAndQueue(int64_t DeviceType, int64_t Async, T Callback) {
     AsyncInfoTy AsyncInfo(Device);
     Callback(Device, AsyncInfo);
   } else {
+    if (Async == AccAsyncNoval || Async == AccAsyncDefault)
+      // `async` without an explicit queue value uses the thread's default
+      // async queue (acc_set_default_async / acc_get_default_async), so that
+      // acc_wait on the value returned by acc_get_default_async synchronizes
+      // with this work.
+      Async = icv::AccDefaultAsyncVar;
     QueueAsyncInfoWrapperTy QueueAsyncInfo(Device, Async);
     AsyncInfoTy &AsyncInfo = QueueAsyncInfo;
     Callback(Device, AsyncInfo);
