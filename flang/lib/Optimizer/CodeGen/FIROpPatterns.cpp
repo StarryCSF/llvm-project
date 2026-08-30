@@ -12,6 +12,7 @@
 
 #include "flang/Optimizer/CodeGen/FIROpPatterns.h"
 #include "flang/Optimizer/Builder/FIRBuilder.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "llvm/Support/Debug.h"
 
@@ -293,14 +294,20 @@ mlir::Value ConvertFIRToLLVMPattern::computeBoxSize(
 // The order to recursively find the proper block:
 // 1. An OpenMP Op that will be outlined.
 // 2. An OpenMP or OpenACC Op with one or more regions holding executable code.
-// 3. A LLVMFuncOp
-// 4. The first ancestor that is one of the above.
+// 3. A GPU launch or kernel function: the alloca is thread-private storage of
+//    the outlined kernel and must stay inside the launch region. Hoisting it
+//    to the host function entry block would turn per-thread storage into a
+//    single buffer shared by all threads after kernel outlining.
+// 4. A LLVMFuncOp
+// 5. The first ancestor that is one of the above.
 mlir::Block *ConvertFIRToLLVMPattern::getBlockForAllocaInsert(
     mlir::Operation *op, mlir::Region *parentRegion) const {
   if (auto iface = mlir::dyn_cast<mlir::omp::OutlineableOpenMPOpInterface>(op))
     return iface.getAllocaBlock();
   if (auto recipeIface = mlir::dyn_cast<mlir::accomp::RecipeInterface>(op))
     return recipeIface.getAllocaBlock(*parentRegion);
+  if (mlir::isa_and_nonnull<mlir::gpu::LaunchOp, mlir::gpu::GPUFuncOp>(op))
+    return &parentRegion->front();
   if (auto llvmFuncOp = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(op))
     return &llvmFuncOp.front();
 
