@@ -10840,6 +10840,23 @@ bool OpenMPIRBuilder::checkAndEmitFlushAfterAtomic(
   return Flush;
 }
 
+/// Set the alignment of an atomic load/store created for a scalar atomic
+/// operation to the natural alignment of the accessed scalar type.
+///
+/// Atomic operations must be naturally aligned for their access size.  These
+/// instructions may be created before the module's data layout describes the
+/// final target (e.g. GPU modules get their target data layout only after
+/// the module translation), in which case the inferred default alignment can
+/// be smaller than the access size and the code generation will reject the
+/// atomic operation later on.
+static void setAtomicAccessAlignment(Instruction *inst, Type *elemTy) {
+  Align align(elemTy->getScalarSizeInBits() / 8);
+  if (auto *loadInst = dyn_cast<LoadInst>(inst))
+    loadInst->setAlignment(align);
+  else if (auto *storeInst = dyn_cast<StoreInst>(inst))
+    storeInst->setAlignment(align);
+}
+
 OpenMPIRBuilder::InsertPointTy
 OpenMPIRBuilder::createAtomicRead(const LocationDescription &Loc,
                                   AtomicOpValue &X, AtomicOpValue &V,
@@ -10860,6 +10877,7 @@ OpenMPIRBuilder::createAtomicRead(const LocationDescription &Loc,
     LoadInst *XLD =
         Builder.CreateLoad(XElemTy, X.Var, X.IsVolatile, "omp.atomic.read");
     XLD->setAtomic(AO);
+    setAtomicAccessAlignment(XLD, XElemTy);
     XRead = cast<Value>(XLD);
   } else if (XElemTy->isStructTy()) {
     // FIXME: Add checks to ensure __atomic_load is emitted iff the
@@ -10881,6 +10899,7 @@ OpenMPIRBuilder::createAtomicRead(const LocationDescription &Loc,
     LoadInst *XLoad =
         Builder.CreateLoad(IntCastTy, X.Var, X.IsVolatile, "omp.atomic.load");
     XLoad->setAtomic(AO);
+    setAtomicAccessAlignment(XLoad, XElemTy);
     if (XElemTy->isFloatingPointTy()) {
       XRead = Builder.CreateBitCast(XLoad, XElemTy, "atomic.flt.cast");
     } else {
@@ -10909,6 +10928,7 @@ OpenMPIRBuilder::createAtomicWrite(const LocationDescription &Loc,
   if (XElemTy->isIntegerTy()) {
     StoreInst *XSt = Builder.CreateStore(Expr, X.Var, X.IsVolatile);
     XSt->setAtomic(AO);
+    setAtomicAccessAlignment(XSt, XElemTy);
   } else if (XElemTy->isStructTy()) {
     LoadInst *OldVal = Builder.CreateLoad(XElemTy, X.Var, "omp.atomic.read");
     const DataLayout &DL = OldVal->getModule()->getDataLayout();
@@ -10926,6 +10946,7 @@ OpenMPIRBuilder::createAtomicWrite(const LocationDescription &Loc,
         Builder.CreateBitCast(Expr, IntCastTy, "atomic.src.int.cast");
     StoreInst *XSt = Builder.CreateStore(ExprCast, X.Var, X.IsVolatile);
     XSt->setAtomic(AO);
+    setAtomicAccessAlignment(XSt, XElemTy);
   }
 
   checkAndEmitFlushAfterAtomic(Loc, AO, AtomicKind::Write);
@@ -11069,6 +11090,7 @@ Expected<std::pair<Value *, Value *>> OpenMPIRBuilder::emitAtomicUpdate(
         Builder.CreateLoad(XElemTy, X, X->getName() + ".atomic.load");
     AtomicOrdering LoadAO = TransformReleaseAcquireRelease(AO);
     OldVal->setAtomic(LoadAO);
+    setAtomicAccessAlignment(OldVal, XElemTy);
     const DataLayout &LoadDL = OldVal->getModule()->getDataLayout();
     unsigned LoadSize = LoadDL.getTypeStoreSize(XElemTy);
 
@@ -11121,6 +11143,7 @@ Expected<std::pair<Value *, Value *>> OpenMPIRBuilder::emitAtomicUpdate(
         Builder.CreateLoad(IntCastTy, X, X->getName() + ".atomic.load");
     AtomicOrdering LoadAO = TransformReleaseAcquireRelease(AO);
     OldVal->setAtomic(LoadAO);
+    setAtomicAccessAlignment(OldVal, XElemTy);
     // CurBB
     // |     /---\
     // ContBB    |
@@ -11295,6 +11318,7 @@ OpenMPIRBuilder::InsertPointTy OpenMPIRBuilder::createAtomicCompare(
       LoadInst *XCurr = Builder.CreateLoad(IntCastTy, X.Var,
                                            X.Var->getName() + ".atomic.load");
       XCurr->setAtomic(AtomicOrdering::Monotonic);
+      setAtomicAccessAlignment(XCurr, X.ElemTy);
       Value *XFP = Builder.CreateBitCast(XCurr, X.ElemTy);
 
       // IEEE 754: NaN != NaN, but cmpxchg would succeed if E and X have
