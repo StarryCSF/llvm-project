@@ -3502,6 +3502,18 @@ void ACCCGToGPULowering::processCombineRegionOp(
   bool destIsPerThreadPrivate = isa_and_nonnull<memref::AllocaOp>(
       unwrapMemRefConversion(mapping.lookupOrDefault(op.getDestVar()))
           .getDefiningOp());
+  // The privatized destination may also be a function-local FIR alloca
+  // wrapped in a fir.declare (this pass cannot name FIR ops directly).  Such
+  // an alloca is thread-private storage of the outlined kernel: every thread
+  // combines into its own copy, so the combine must not be predicated to a
+  // single lane and must not use atomics.
+  Operation *cmbDestDefOp =
+      unwrapMemRefConversion(mapping.lookupOrDefault(op.getDestVar()))
+          .getDefiningOp();
+  if (cmbDestDefOp && cmbDestDefOp->getName().getStringRef() == "fir.declare")
+    cmbDestDefOp = cmbDestDefOp->getOperand(0).getDefiningOp();
+  if (cmbDestDefOp && cmbDestDefOp->getName().getStringRef() == "fir.alloca")
+    destIsPerThreadPrivate = true;
   SmallVector<mlir::acc::GPUParallelDimAttr> parDims =
       getReductionCombineParDims(op);
   // acc.loop reductions (`!$acc loop worker reduction(...)`) do not attach a
@@ -3666,6 +3678,15 @@ void ACCCGToGPULowering::processCombineRegionOp(
     rewriter.clone(*innerOp, mapping);
     return WalkResult::advance();
   });
+  if (!combineHasThreadDim && !srcHasAccumulateUser && destIsPerThreadPrivate) {
+    // Serialized per-thread combine: every thread combined into its own
+    // destination copy. A workgroup barrier is still required so that no
+    // thread proceeds into a later loop writing shared data (e.g. flipping
+    // elements of the array another thread is still reducing) before all
+    // threads finished the reduction. The combine sits in uniform gang-level
+    // control flow, so the barrier cannot deadlock.
+    emitGPUBarrierWorkgroup(rewriter, op.getLoc());
+  }
 }
 
 void ACCCGToGPULowering::processGenericOp(Operation *op) {
