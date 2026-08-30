@@ -1341,32 +1341,161 @@ convertAccAtomicWrite(acc::AtomicWriteOp &opInst,
   return success();
 }
 
-/// Convert the supported OpenACC atomic capture forms by lowering the nested
-/// atomic operations in their specified order.
+/// Convert the supported OpenACC atomic capture forms by lowering the read
+/// and the write/update as a single atomic capture construct.  Lowering the
+/// two nested operations as independent atomics would leave a window where
+/// another thread can modify the target between the capture and the update,
+/// which violates the OpenACC atomic capture semantics.
 static LogicalResult
 convertAccAtomicCapture(acc::AtomicCaptureOp &opInst,
                         llvm::IRBuilderBase &builder,
                         LLVM::ModuleTranslation &moduleTranslation) {
-  bool converted = false;
+  acc::AtomicReadOp readOp;
+  acc::AtomicWriteOp writeOp;
+  acc::AtomicUpdateOp updateOp;
+  bool readFirst = true;
   for (Operation &nestedOp : opInst.getRegion().front()) {
-    if (auto readOp = dyn_cast<acc::AtomicReadOp>(&nestedOp)) {
-      if (failed(convertAccAtomicRead(readOp, builder, moduleTranslation)))
-        return failure();
-    } else if (auto writeOp = dyn_cast<acc::AtomicWriteOp>(&nestedOp)) {
-      if (failed(convertAccAtomicWrite(writeOp, builder, moduleTranslation)))
-        return failure();
-    } else if (auto updateOp = dyn_cast<acc::AtomicUpdateOp>(&nestedOp)) {
-      if (failed(convertAccAtomicUpdate(updateOp, builder, moduleTranslation)))
-        return failure();
+    if (auto op = dyn_cast<acc::AtomicReadOp>(&nestedOp)) {
+      readOp = op;
+    } else if (auto op = dyn_cast<acc::AtomicWriteOp>(&nestedOp)) {
+      writeOp = op;
+      readFirst = static_cast<bool>(readOp);
+    } else if (auto op = dyn_cast<acc::AtomicUpdateOp>(&nestedOp)) {
+      updateOp = op;
+      readFirst = static_cast<bool>(readOp);
     } else if (!isa<acc::TerminatorOp>(&nestedOp)) {
       return opInst.emitError("unsupported atomic capture operation");
-    } else {
-      continue;
     }
-    converted = true;
   }
-  return converted ? success()
-                   : opInst.emitError("unsupported atomic capture form");
+  if (!readOp || (!writeOp && !updateOp))
+    return opInst.emitError("unsupported atomic capture form");
+
+  mlir::Value mlirExpr;
+  bool isXBinopExpr = false;
+  llvm::AtomicRMWInst::BinOp binop = llvm::AtomicRMWInst::BinOp::BAD_BINOP;
+  if (writeOp) {
+    mlirExpr = writeOp.getExpr();
+  } else {
+    // A postfix capture (v = x; x = f(x, expr)) captures the old value; a
+    // prefix capture (x = f(x, expr); v = x) captures the new value.
+    auto &innerOpList = updateOp.getRegion().front().getOperations();
+    if (innerOpList.size() == 2) {
+      Operation &innerOp = *updateOp.getRegion().front().begin();
+      BlockArgument regionArg = updateOp.getRegion().front().getArgument(0);
+      if (!llvm::is_contained(innerOp.getOperands(), regionArg))
+        return opInst.emitError(
+            "no atomic update operation with region argument as operand "
+            "found");
+      binop = llvm::TypeSwitch<Operation *, llvm::AtomicRMWInst::BinOp>(
+                  &innerOp)
+                  .Case([&](LLVM::AddOp) {
+                    return llvm::AtomicRMWInst::BinOp::Add;
+                  })
+                  .Case([&](LLVM::SubOp) {
+                    return llvm::AtomicRMWInst::BinOp::Sub;
+                  })
+                  .Case([&](LLVM::AndOp) {
+                    return llvm::AtomicRMWInst::BinOp::And;
+                  })
+                  .Case([&](LLVM::OrOp) {
+                    return llvm::AtomicRMWInst::BinOp::Or;
+                  })
+                  .Case([&](LLVM::XOrOp) {
+                    return llvm::AtomicRMWInst::BinOp::Xor;
+                  })
+                  .Case([&](LLVM::UMaxOp) {
+                    return llvm::AtomicRMWInst::BinOp::UMax;
+                  })
+                  .Case([&](LLVM::UMinOp) {
+                    return llvm::AtomicRMWInst::BinOp::UMin;
+                  })
+                  .Case([&](LLVM::FAddOp) {
+                    return llvm::AtomicRMWInst::BinOp::FAdd;
+                  })
+                  .Case([&](LLVM::FSubOp) {
+                    return llvm::AtomicRMWInst::BinOp::FSub;
+                  })
+                  .Default(llvm::AtomicRMWInst::BinOp::BAD_BINOP);
+      isXBinopExpr = innerOp.getOperand(0) == regionArg;
+      mlirExpr = isXBinopExpr ? innerOp.getOperand(1) : innerOp.getOperand(0);
+    }
+  }
+  bool isPostfixUpdate = readFirst;
+
+  llvm::Value *llvmX = moduleTranslation.lookupValue(readOp.getX());
+  llvm::Value *llvmV = moduleTranslation.lookupValue(readOp.getV());
+  if (!llvmX || !llvmV)
+    return opInst.emitError("could not find LLVM value for atomic capture");
+  llvm::Type *llvmXElementType =
+      moduleTranslation.convertType(readOp.getElementType());
+  if (!llvmXElementType)
+    return opInst.emitError("could not convert atomic capture element type");
+  llvm::Value *llvmExpr =
+      mlirExpr ? moduleTranslation.lookupValue(mlirExpr) : nullptr;
+  // A null expression is valid when no atomicrmw opcode can represent the
+  // update (binop is BAD_BINOP): the builder falls back to a compare-exchange
+  // loop driven by the update region itself.
+
+  llvm::OpenMPIRBuilder::AtomicOpValue llvmAtomicX = {
+      llvmX, llvmXElementType, /*isSigned=*/false, /*isVolatile=*/false};
+  llvm::OpenMPIRBuilder::AtomicOpValue llvmAtomicV = {
+      llvmV, llvmXElementType, /*isSigned=*/false, /*isVolatile=*/false};
+
+  auto updateFn = [&](llvm::Value *atomicx,
+                      llvm::IRBuilder<> &nestedBuilder)
+      -> llvm::Expected<llvm::Value *> {
+    if (updateOp) {
+      Block &block = updateOp.getRegion().front();
+      moduleTranslation.mapValue(block.getArgument(0), atomicx);
+      moduleTranslation.mapBlock(&block, nestedBuilder.GetInsertBlock());
+      if (failed(moduleTranslation.convertBlock(block, true, nestedBuilder)))
+        return llvm::make_error<llvm::StringError>(
+            "failed to convert atomic update region",
+            llvm::inconvertibleErrorCode());
+      auto yieldOp = dyn_cast<acc::YieldOp>(block.getTerminator());
+      if (!yieldOp || yieldOp.getNumOperands() != 1)
+        return llvm::make_error<llvm::StringError>(
+            "atomic update region must yield one value",
+            llvm::inconvertibleErrorCode());
+      return moduleTranslation.lookupValue(yieldOp.getOperand(0));
+    }
+    return moduleTranslation.lookupValue(writeOp.getExpr());
+  };
+
+  auto enclosingFuncOp =
+      opInst.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  // OpenMPIRBuilder requires a dedicated insertion point for allocas. During
+  // GPU module translation the current insertion point can be the end of the
+  // entry block, so split it before passing the entry block to the builder.
+  if (builder.GetInsertBlock() == &enclosingFunction->getEntryBlock() &&
+      builder.GetInsertPoint() == builder.GetInsertBlock()->end()) {
+    llvm::BasicBlock *bodyBlock = llvm::BasicBlock::Create(
+        builder.getContext(), "acc.atomic.body", enclosingFunction,
+        enclosingFunction->getEntryBlock().getNextNode());
+    builder.CreateBr(bodyBlock);
+    builder.SetInsertPoint(bodyBlock);
+  }
+  llvm::OpenMPIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  llvm::OpenMPIRBuilder::LocationDescription location(builder);
+  llvm::OpenMPIRBuilder::InsertPointOrErrorTy afterIP =
+      moduleTranslation.getOpenMPBuilder()->createAtomicCapture(
+          location, allocaIP, llvmAtomicX, llvmAtomicV, llvmExpr,
+          llvm::AtomicOrdering::Monotonic, binop, updateFn,
+          /*UpdateExpr=*/updateOp ? true : false, isPostfixUpdate,
+          isXBinopExpr);
+  if (!afterIP) {
+    llvm::handleAllErrors(afterIP.takeError(),
+                          [&](const llvm::ErrorInfoBase &e) {
+                            opInst.emitError() << e.message();
+                          });
+    return failure();
+  }
+  builder.restoreIP(*afterIP);
+  return success();
 }
 
 /// Convert an OpenACC atomic update through the common LLVM atomic builder.
