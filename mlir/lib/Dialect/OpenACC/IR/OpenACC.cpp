@@ -755,9 +755,18 @@ static LogicalResult checkVarAndVarType(Op op) {
     return op.emitError("var must be mappable or pointer-like");
 
   // When it is a pointer-like type, the varType must capture the target type.
+  // Exception: for opaque pointers (e.g., !llvm.ptr), there is no element type,
+  // so varType == var.getType() is acceptable.
   if (mlir::isa<mlir::acc::PointerLikeType>(op.getVar().getType()) &&
-      op.getVarType() == op.getVar().getType())
+      op.getVarType() == op.getVar().getType()) {
+    // Check if this is an opaque pointer (LLVM opaque pointer has no element type)
+    auto ptrLikeTy = mlir::cast<mlir::acc::PointerLikeType>(op.getVar().getType());
+    // For opaque pointers, getElementType() returns the pointer type itself
+    // In this case, we cannot distinguish the element type, so we allow it
+    if (ptrLikeTy.getElementType() == op.getVar().getType())
+      return success();
     return op.emitError("varType must capture the element type of var");
+  }
 
   return success();
 }

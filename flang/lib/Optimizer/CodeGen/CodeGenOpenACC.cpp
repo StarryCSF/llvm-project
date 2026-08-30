@@ -67,10 +67,20 @@ struct DataClauseOpConversion : public OpenACCFIROpConversion<OpType> {
     // Keep the original bounds values as OpenACC metadata. The LLVMIR
     // translation uses their defining acc.bounds operations to form the
     // pointer offset and mapped byte extent.
+    // Convert type attributes. Use convertBoxTypeAsStruct for descriptor
+    // types so that varType represents the descriptor struct rather than
+    // an opaque pointer (matching OpenMP MapInfoOp behavior).
     if (auto varType = curOp->template getAttrOfType<mlir::TypeAttr>(
             "varType")) {
-      if (mlir::Type converted = converter->convertType(varType.getValue()))
-        newOp->setAttr("varType", mlir::TypeAttr::get(converted));
+      mlir::Type origType = varType.getValue();
+      mlir::Type convertedType;
+      if (fir::isTypeWithDescriptor(origType))
+        convertedType = this->lowerTy().convertBoxTypeAsStruct(
+            mlir::cast<fir::BaseBoxType>(origType));
+      else
+        convertedType = converter->convertType(origType);
+      if (convertedType)
+        newOp->setAttr("varType", mlir::TypeAttr::get(convertedType));
     }
     rewriter.replaceOp(curOp, newOp);
     return mlir::success();

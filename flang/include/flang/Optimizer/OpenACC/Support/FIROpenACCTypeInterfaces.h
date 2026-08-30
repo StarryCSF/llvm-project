@@ -23,7 +23,21 @@ struct OpenACCPointerLikeModel
     : public mlir::acc::PointerLikeType::ExternalModel<
           OpenACCPointerLikeModel<T>, T> {
   mlir::Type getElementType(mlir::Type pointer) const {
-    return mlir::cast<T>(pointer).getElementType();
+    // For types like !fir.ref<!fir.box<...>>, we need to unwrap all the
+    // layers to get the actual element type.
+    mlir::Type eleTy = mlir::cast<T>(pointer).getElementType();
+    // Keep unwrapping while the element type is still pointer-like or a box.
+    while (true) {
+      if (mlir::isa<mlir::acc::PointerLikeType>(eleTy)) {
+        eleTy = mlir::cast<mlir::acc::PointerLikeType>(eleTy).getElementType();
+      } else if (auto boxTy = mlir::dyn_cast<fir::BaseBoxType>(eleTy)) {
+        // For box types, extract the element type from the box content.
+        eleTy = fir::unwrapRefType(boxTy.getEleTy());
+      } else {
+        break;
+      }
+    }
+    return eleTy;
   }
   mlir::acc::VariableTypeCategory
   getPointeeTypeCategory(mlir::Type pointer,
