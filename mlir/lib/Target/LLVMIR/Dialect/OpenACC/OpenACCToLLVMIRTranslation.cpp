@@ -1633,8 +1633,12 @@ static LogicalResult convertDataOp(acc::DataOp &op,
         return isa<acc::CopyoutOp>(use.getOwner());
       });
     }
+    // A copyin whose exit is not a copyout (i.e. a plain delete at region
+    // end) only decrements the reference count: the underlying entry may be
+    // shared with an enclosing data region. Finalize is reserved for explicit
+    // delete operands.
     appendEndFlag(data, isCopyout ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
-                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj));
+                                  : kAccMapTypePtrAndObj);
   }
   appendEndFlags(deleteOperands, kAccMapTypeFinalize);
   appendEndFlags(copyout, kAccMapTypeFrom | kAccMapTypePtrAndObj);
@@ -1644,7 +1648,7 @@ static LogicalResult convertDataOp(acc::DataOp &op,
                      cast<acc::CreateOp>(entry).getDataClause() ==
                          acc::DataClause::acc_copyout;
     appendEndFlag(data, isCopyout ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
-                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj));
+                                  : kAccMapTypePtrAndObj);
   }
   appendEndFlags(present, kAccMapTypePresent | kAccMapTypeNoCreate);
   appendEndFlags(noCreateOperands, kAccMapTypeNoCreate | kAccMapTypePtrAndObj);
@@ -2505,9 +2509,13 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                   return isa<acc::CopyoutOp>(use.getOwner());
                 });
               }
+              // The exit for a copyin without a copyout is a plain reference
+              // count decrement: the entry may be shared with an enclosing
+              // data region, so it must not be force-deleted here. Finalize
+              // is reserved for explicit delete operands.
               uint64_t flag = isCopyout
                                   ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
-                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj);
+                                  : kAccMapTypePtrAndObj;
               uint64_t scalarSize = 0;
               bool isScalar = getScalarMappingSize(
                   kernelEnvOp, data, moduleTranslation, scalarSize);
@@ -2525,7 +2533,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                     acc::DataClause::acc_copyout_zero);
               uint64_t flag = isCopyout
                                   ? (kAccMapTypeFrom | kAccMapTypePtrAndObj)
-                                  : (kAccMapTypeFinalize | kAccMapTypePtrAndObj);
+                                  : kAccMapTypePtrAndObj;
               uint64_t scalarSize = 0;
               bool isScalar = getScalarMappingSize(
                   kernelEnvOp, data, moduleTranslation, scalarSize);
