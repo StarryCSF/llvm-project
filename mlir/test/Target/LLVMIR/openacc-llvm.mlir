@@ -37,7 +37,7 @@ llvm.func @testenterdataop(%arg0: !llvm.ptr, %arg1 : !llvm.ptr) {
 
 
 
-// CHECK: call void @__tgt_acc_data_enter(ptr @[[LOCGLOBAL]], i64 0, i64 0, i32 2, ptr %[[OFFLOAD_BASEPTR]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAD_SIZES]], ptr @[[MAPTYPES]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr @[[LOCGLOBAL]], i64 0, i64 1, i32 2, ptr %[[OFFLOAD_BASEPTR]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAD_SIZES]], ptr @[[MAPTYPES]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
 
 // CHECK: declare void @__tgt_acc_data_enter(ptr, i64, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i64)
 
@@ -82,7 +82,7 @@ llvm.func @testexitdataop(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
 // CHECK: store i64 ptrtoint (ptr getelementptr (ptr, ptr null, i32 1) to i64), ptr %[[OFFLOAS_SIZES_GEP]]
 
 
-// CHECK: call void @__tgt_acc_data_exit(ptr @[[LOCGLOBAL]], i64 0, i64 0, i32 2, ptr %[[OFFLOAD_BASEPTRS]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAS_SIZES]], ptr @[[MAPTYPES]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr @[[LOCGLOBAL]], i64 0, i64 1, i32 2, ptr %[[OFFLOAD_BASEPTRS]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAS_SIZES]], ptr @[[MAPTYPES]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
 
 // CHECK: declare void @__tgt_acc_data_exit(ptr, i64, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i64)
 
@@ -110,7 +110,7 @@ llvm.func @testenterdataop_clauses(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %cond: i1
 
 // CHECK: br i1 %[[COND]], label %acc.standalone.then, label %acc.standalone.end
 
-// CHECK: call void @__tgt_acc_data_enter(ptr @[[LOCGLOBAL]], i64 0, i64 0, i32 2, ptr %{{.*}}, ptr %{{.*}}, ptr %{{.*}}, ptr @[[MAPTYPES]], ptr @{{.*}}, ptr null, ptr null, i64 %[[ASYNC]])
+// CHECK: call void @__tgt_acc_data_enter(ptr @[[LOCGLOBAL]], i64 0, i64 1, i32 2, ptr %{{.*}}, ptr %{{.*}}, ptr %{{.*}}, ptr @[[MAPTYPES]], ptr @{{.*}}, ptr null, ptr null, i64 %[[ASYNC]])
 
 // CHECK: declare void @__tgt_acc_data_enter(ptr, i64, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i64)
 
@@ -142,7 +142,7 @@ llvm.func @testexitdataop_clauses(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %cond: i1,
 
 // CHECK: br i1 %[[COND]], label %acc.standalone.then, label %acc.standalone.end
 
-// CHECK: call void @__tgt_acc_data_exit(ptr @[[LOCGLOBAL]], i64 0, i64 0, i32 2, ptr %{{.*}}, ptr %{{.*}}, ptr %{{.*}}, ptr @[[MAPTYPES]], ptr @{{.*}}, ptr null, ptr null, i64 %[[ASYNC]])
+// CHECK: call void @__tgt_acc_data_exit(ptr @[[LOCGLOBAL]], i64 0, i64 1, i32 2, ptr %{{.*}}, ptr %{{.*}}, ptr %{{.*}}, ptr @[[MAPTYPES]], ptr @{{.*}}, ptr null, ptr null, i64 %[[ASYNC]])
 
 // CHECK: declare void @__tgt_acc_data_exit(ptr, i64, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i64)
 
@@ -152,7 +152,7 @@ llvm.func @testexitdataop_clauses(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %cond: i1,
 
 // TODO: acc.update is not lowered to LLVM IR .
 // once acc.update is lowered to __tgt_acc_data_update;
-// call void @__tgt_acc_data_update(ptr @{{.*}}, i64 0, i64 0, i32 1,
+// call void @__tgt_acc_data_update(ptr @{{.*}}, i64 0, i64 1, i32 1,
 //       ptr %{{.*}}, ptr %{{.*}}, ptr %{{.*}}, ptr @{{.*}}, ptr @{{.*}},
 //       ptr null, ptr null, i64 -1)
 //
@@ -208,7 +208,7 @@ llvm.func @testdataop(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
 // CHECK: %[[OFFLOAS_SIZES_GEP:.*]] = getelementptr inbounds [2 x i64], ptr %[[OFFLOAS_SIZES]], i32 0, i32 1
 // CHECK: store i64 ptrtoint (ptr getelementptr (ptr, ptr null, i32 1) to i64), ptr %[[OFFLOAS_SIZES_GEP]]
 
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 2, ptr %[[OFFLOAD_BASEPTRS]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAS_SIZES]], ptr @[[MAPTYPES]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 2, ptr %[[OFFLOAD_BASEPTRS]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAS_SIZES]], ptr @[[MAPTYPES]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
 // CHECK: br label %acc.data
 
 // CHECK:      acc.data:
@@ -216,7 +216,7 @@ llvm.func @testdataop(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
 // CHECK-NEXT:   br label %acc.end_data
 
 // CHECK: acc.end_data:
-// CHECK:   call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 2, ptr %[[OFFLOAD_BASEPTRS]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAS_SIZES]], ptr @[[MAPTYPES_END]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
+// CHECK:   call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 2, ptr %[[OFFLOAD_BASEPTRS]], ptr %[[OFFLOAD_PTRS]], ptr %[[OFFLOAS_SIZES]], ptr @[[MAPTYPES_END]], ptr @[[MAPNAMES]], ptr null, ptr null, i64 -1)
 
 // CHECK: declare void @__tgt_acc_data_begin(ptr, i64, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i64)
 // CHECK: declare void @__tgt_acc_data_end(ptr, i64, i64, i32, ptr, ptr, ptr, ptr, ptr, ptr, ptr, i64)
@@ -235,7 +235,7 @@ llvm.func @testpresentop(%arg0: !llvm.ptr) {
 // CHECK: @[[PRESENT_MAPTYPES:.*]] = private unnamed_addr constant [1 x i64] [i64 1056768]
 // CHECK: define void @testpresentop(ptr %[[PRESENT_PTR:.*]])
 // CHECK: store ptr %[[PRESENT_PTR]], ptr %{{.*}}
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[PRESENT_MAPTYPES]], ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[PRESENT_MAPTYPES]], ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -252,7 +252,7 @@ llvm.func @testexitdata_copyout_zero(%arg0: !llvm.ptr) {
 
 // CHECK: @[[MAPTYPES_EXIT_ZERO:.*]] = private unnamed_addr constant [1 x i64] [i64 131090]
 // CHECK: define void @testexitdata_copyout_zero(ptr %[[PTR0:.*]])
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[MAPTYPES_EXIT_ZERO]], ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[MAPTYPES_EXIT_ZERO]], ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -274,5 +274,5 @@ llvm.func @testdata_copyout_zero(%arg0: !llvm.ptr) {
 // Exit flags: copyout(zero) -> FROM | INIT_ZERO = 0x20002 = 131074
 // CHECK: @[[DATA_ZERO_MAPTYPES_END:.*]] = private unnamed_addr constant [1 x i64] [i64 131074]
 // CHECK: define void @testdata_copyout_zero(ptr %[[PTR0:.*]])
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[DATA_ZERO_MAPTYPES]], ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[DATA_ZERO_MAPTYPES_END]], ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[DATA_ZERO_MAPTYPES]], ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @[[DATA_ZERO_MAPTYPES_END]], ptr {{.*}}, ptr null, ptr null, i64 -1)

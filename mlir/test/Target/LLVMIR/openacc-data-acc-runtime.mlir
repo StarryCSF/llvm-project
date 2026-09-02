@@ -30,8 +30,8 @@ llvm.func @testdataop_all_clauses(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
 // CHECK: @[[END_MAPTYPES:.*]] = private unnamed_addr constant [7 x i64] [i64 8, i64 2, i64 8, i64 1056768, i64 8, i64 1040, i64 24]
 // CHECK-LABEL: define void @testdataop_all_clauses
 // CHECK: alloca [7 x ptr]
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 7, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 7, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 7, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 7, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -48,12 +48,12 @@ llvm.func @testdataop_async_if(%arg0: !llvm.ptr, %async: i32, %cond: i1) {
 // CHECK-LABEL: define void @testdataop_async_if
 // CHECK: br i1 %{{.*}}, label %acc.data, label %acc.data.skip
 // CHECK: acc.data:
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
 // CHECK: br label %acc.end_data
 // CHECK: acc.data.skip:
 // CHECK: br label %acc.data.continue
 // CHECK: acc.end_data:
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
 // CHECK: br label %acc.data.continue
 // CHECK: acc.data.continue:
 // CHECK: ret void
@@ -74,9 +74,9 @@ llvm.func @testdataop_wait_device_type(%arg0: !llvm.ptr, %async: i32,
 }
 
 // CHECK-LABEL: define void @testdataop_wait_device_type
-// CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 0, i32 %{{.*}}, i32 1, ptr %{{.*}}, i64 %{{.*}})
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
+// CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 1, i32 %{{.*}}, i32 1, ptr %{{.*}}, i64 %{{.*}})
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 %{{.*}})
 
 // -----
 
@@ -92,8 +92,8 @@ llvm.func @testdataop_default(%arg0: !llvm.ptr) {
 }
 
 // CHECK-LABEL: define void @testdataop_default
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -117,8 +117,8 @@ llvm.func @testdata_bounds_upper(%arg0: !llvm.ptr) {
 // CHECK: %[[UPPER_PTR:.*]] = getelementptr inbounds i8, ptr %{{.*}}, i64 4
 // CHECK: store ptr null, ptr %{{.*}}
 // CHECK: store i64 16, ptr %{{.*}}
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -183,8 +183,8 @@ llvm.func @testdata_bounds_copy(%arg0: !llvm.ptr) {
 // CHECK: %[[COPY_PTR:.*]] = getelementptr inbounds i8, ptr %{{.*}}, i64 4
 // CHECK: store ptr null, ptr %{{.*}}
 // CHECK: store i64 16, ptr %{{.*}}
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -202,8 +202,8 @@ llvm.func @testdataop_copy(%arg0: !llvm.ptr) {
 // CHECK: @[[UB_COPY_MAPTYPES:.*]] = private unnamed_addr constant [1 x i64] [i64 1]
 // CHECK: @[[UB_COPY_END_MAPTYPES:.*]] = private unnamed_addr constant [1 x i64] [i64 18]
 // CHECK-LABEL: define void @testdataop_copy
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -218,8 +218,8 @@ llvm.func @testdataop_async_only(%arg0: !llvm.ptr) {
 }
 
 // CHECK-LABEL: define void @testdataop_async_only
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -2)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -2)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -2)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -2)
 
 // -----
 
@@ -234,8 +234,8 @@ llvm.func @testdataop_wait_only(%arg0: !llvm.ptr) {
 }
 
 // CHECK-LABEL: define void @testdataop_wait_only
-// CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 0, i32 -1, i32 0, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 1, i32 -1, i32 0, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
 // CHECK: call void @__tgt_acc_data_end
 
 // -----
@@ -253,8 +253,8 @@ llvm.func @testdataop_wait_values(%arg0: !llvm.ptr, %w1: i32, %w2: i32) {
 // CHECK-LABEL: define void @testdataop_wait_values
 // CHECK: store i64 %{{.*}}, ptr %{{.*}}
 // CHECK: store i64 %{{.*}}, ptr %{{.*}}
-// CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 0, i32 -1, i32 2, ptr %{{.*}}, i64 -1)
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 1, i32 -1, i32 2, ptr %{{.*}}, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -269,8 +269,8 @@ llvm.func @testdataop_default_present(%arg0: !llvm.ptr) {
 }
 
 // CHECK-LABEL: define void @testdataop_default_present
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -293,8 +293,8 @@ llvm.func @testdata_bounds_default_lb(%arg0: !llvm.ptr) {
 // CHECK-LABEL: define void @testdata_bounds_default_lb
 // CHECK: store ptr null, ptr %{{.*}}
 // CHECK: store i64 16, ptr %{{.*}}
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -345,5 +345,5 @@ llvm.func @testdata_bounds_clauses(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
 // CHECK: store i64 16, ptr %{{.*}}
 // CHECK: getelementptr inbounds i8, ptr %{{.*}}, i64 4
 // CHECK: store i64 16, ptr %{{.*}}
-// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 0, i32 6, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
-// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 0, i32 6, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_begin(ptr {{.*}}, i64 0, i64 1, i32 6, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_end(ptr {{.*}}, i64 0, i64 1, i32 6, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes_end, ptr {{.*}}, ptr null, ptr null, i64 -1)

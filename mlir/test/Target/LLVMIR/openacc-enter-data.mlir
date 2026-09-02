@@ -10,7 +10,7 @@ llvm.func @testenterdata_if(%arg0: !llvm.ptr, %cond: i1) {
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testenterdata_if
 // CHECK: br i1 %[[COND:.*]], label %acc.standalone.then, label %acc.standalone.end
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -23,7 +23,7 @@ llvm.func @testenterdata_async(%arg0: !llvm.ptr, %async: i64) {
 
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testenterdata_async
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 %[[ASYNC:.*]])
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 %[[ASYNC:.*]])
 
 // -----
 
@@ -38,7 +38,7 @@ llvm.func @testenterdata_wait(%arg0: !llvm.ptr, %wait: i64) {
 // CHECK-LABEL: define void @testenterdata_wait
 // CHECK: store i64 %[[WAIT:.*]], ptr %{{.*}}
 // CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 0, i32 -1, i32 1, ptr {{.*}}, i64 -1)
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -51,7 +51,7 @@ llvm.func @testenterdata_copyin(%arg0: !llvm.ptr) {
 
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 17]
 // CHECK-LABEL: define void @testenterdata_copyin
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -64,7 +64,7 @@ llvm.func @testenterdata_create(%arg0: !llvm.ptr) {
 
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testenterdata_create
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -78,7 +78,7 @@ llvm.func @testenterdata_create_zero(%arg0: !llvm.ptr) {
 
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 131088]
 // CHECK-LABEL: define void @testenterdata_create_zero
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -91,7 +91,7 @@ llvm.func @testenterdata_attach(%arg0: !llvm.ptr) {
 
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testenterdata_attach
-// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_enter(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -106,7 +106,7 @@ llvm.func @testexitdata_if(%arg0: !llvm.ptr, %cond: i1) {
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testexitdata_if
 // CHECK: br i1 %[[COND:.*]], label %acc.standalone.then, label %acc.standalone.end
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -120,7 +120,7 @@ llvm.func @testexitdata_async(%arg0: !llvm.ptr, %async: i64) {
 
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testexitdata_async
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 %[[ASYNC:.*]])
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 %[[ASYNC:.*]])
 
 // -----
 
@@ -136,7 +136,7 @@ llvm.func @testexitdata_wait(%arg0: !llvm.ptr, %wait: i64) {
 // CHECK-LABEL: define void @testexitdata_wait
 // CHECK: store i64 %[[WAIT:.*]], ptr %{{.*}}
 // CHECK: call i32 @__tgt_acc_wait(ptr {{.*}}, i64 0, i64 0, i32 -1, i32 1, ptr {{.*}}, i64 -1)
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -152,7 +152,7 @@ llvm.func @testexitdata_copyout(%arg0: !llvm.ptr) {
 // FROM|PTR_AND_OBJ = 18
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 18]
 // CHECK-LABEL: define void @testexitdata_copyout
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -168,7 +168,7 @@ llvm.func @testexitdata_delete(%arg0: !llvm.ptr) {
 // DELETE|PTR_AND_OBJ = 16
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testexitdata_delete
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -184,7 +184,7 @@ llvm.func @testexitdata_detach(%arg0: !llvm.ptr) {
 // DETACH|PTR_AND_OBJ = 16
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 16]
 // CHECK-LABEL: define void @testexitdata_detach
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
 
 // -----
 
@@ -200,4 +200,4 @@ llvm.func @testexitdata_finalize(%arg0: !llvm.ptr) {
 // DELETE|PTR_AND_OBJ|FINALIZE = 24
 // CHECK: @.offload_maptypes = private unnamed_addr constant [1 x i64] [i64 24]
 // CHECK-LABEL: define void @testexitdata_finalize
-// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 0, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)
+// CHECK: call void @__tgt_acc_data_exit(ptr {{.*}}, i64 0, i64 1, i32 1, ptr {{.*}}, ptr {{.*}}, ptr {{.*}}, ptr @.offload_maptypes, ptr {{.*}}, ptr null, ptr null, i64 -1)

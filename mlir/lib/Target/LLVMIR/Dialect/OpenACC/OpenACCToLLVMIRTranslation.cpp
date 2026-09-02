@@ -15,6 +15,7 @@
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/OpenACC/OpenACC.h"
+#include "mlir/Dialect/OpenACC/OpenACCUtilsCG.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Target/LLVMIR/Dialect/OpenMPCommon.h"
@@ -158,6 +159,24 @@ static llvm::Function *getAccDataExitFunction(llvm::Module &module,
   return llvm::cast<llvm::Function>(
       module
           .getOrInsertFunction("__tgt_acc_data_exit",
+                               llvm::FunctionType::get(
+                                   llvm::Type::getVoidTy(ctx),
+                                   {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy,
+                                    ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty},
+                                   false))
+          .getCallee());
+}
+
+/// Get or create __tgt_acc_data_update function declaration.
+static llvm::Function *getAccDataUpdateFunction(llvm::Module &module,
+                                                llvm::LLVMContext &ctx) {
+  auto *identTy = llvm::PointerType::getUnqual(ctx);
+  auto *ptrTy = llvm::PointerType::getUnqual(ctx);
+  auto *i64Ty = llvm::Type::getInt64Ty(ctx);
+  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
+  return llvm::cast<llvm::Function>(
+      module
+          .getOrInsertFunction("__tgt_acc_data_update",
                                llvm::FunctionType::get(
                                    llvm::Type::getVoidTy(ctx),
                                    {identTy, i64Ty, i64Ty, i32Ty, ptrTy, ptrTy,
@@ -416,7 +435,7 @@ processDataOperandWithBounds(llvm::IRBuilderBase &builder,
 
   llvm::Value *dataPtrBase = dataValue;
   llvm::Value *dataPtr = dataValue;
-  llvm::Value *dataSize = accBuilder->getSizeInBytes(dataValue);
+  llvm::Value *dataSize = nullptr; // Will be set below
 
   // Retrieve bounds and the mapped variable type from the data entry.
   mlir::ValueRange bounds;
@@ -591,6 +610,163 @@ processDataOperandWithBounds(llvm::IRBuilderBase &builder,
     dataSize = sliceSize;
   }
 
+  // If there are no bounds, try to compute the size from the type.
+  // This handles cases where Flang did not generate implicit bounds for
+  // fixed-size arrays.
+  if (!dataSize) {
+    // First, try using MappableType interface if available.
+    // Check varType first.
+    if (varType && mlir::isa<mlir::acc::MappableType>(varType)) {
+      std::optional<mlir::DataLayout> optDataLayout =
+          mlir::acc::getDataLayout(dataOp);
+      if (optDataLayout) {
+        auto mappableType = mlir::cast<mlir::acc::MappableType>(varType);
+        auto optSize = mappableType.getSizeInBytes(varPtr, /*accBounds=*/{},
+                                                   *optDataLayout);
+        if (optSize.has_value() && !optSize->isScalable()) {
+          dataSize = builder.getInt64(optSize->getFixedValue());
+        }
+      }
+    } else if (varType) {
+      // Try to compute size from the MLIR type.
+      // Handle LLVM array types (e.g., !llvm.array<100 x f32>).
+      if (auto llvmArrayType = mlir::dyn_cast<LLVM::LLVMArrayType>(varType)) {
+        uint64_t numElements = llvmArrayType.getNumElements();
+        mlir::Type elemType = llvmArrayType.getElementType();
+
+        const llvm::DataLayout &llvmDataLayout =
+            moduleTranslation.getLLVMModule()->getDataLayout();
+        llvm::Type *llvmElemTy = moduleTranslation.convertType(elemType);
+
+        uint64_t elemByteSize = 1;
+        if (llvmElemTy && llvmElemTy->isSized()) {
+          llvm::TypeSize typeSize = llvmDataLayout.getTypeAllocSize(llvmElemTy);
+          if (!typeSize.isScalable())
+            elemByteSize = typeSize.getFixedValue();
+        }
+
+        dataSize = builder.getInt64(numElements * elemByteSize);
+      }
+      // Try MemRefType (common in MLIR).
+      else if (auto memrefType = mlir::dyn_cast<MemRefType>(varType)) {
+        if (memrefType.hasStaticShape()) {
+          int64_t numElements = memrefType.getNumElements();
+
+          mlir::Type elemType = memrefType.getElementType();
+          const llvm::DataLayout &llvmDataLayout =
+              moduleTranslation.getLLVMModule()->getDataLayout();
+          llvm::Type *llvmElemTy = moduleTranslation.convertType(elemType);
+
+          uint64_t elemByteSize = 1;
+          if (llvmElemTy && llvmElemTy->isSized()) {
+            llvm::TypeSize typeSize =
+                llvmDataLayout.getTypeAllocSize(llvmElemTy);
+            if (!typeSize.isScalable())
+              elemByteSize = typeSize.getFixedValue();
+          }
+
+          dataSize = builder.getInt64(numElements * elemByteSize);
+        }
+      }
+      // For other shaped types.
+      else if (auto shapedType = mlir::dyn_cast<mlir::ShapedType>(varType)) {
+        if (shapedType.hasStaticShape()) {
+          int64_t numElements = shapedType.getNumElements();
+
+          mlir::Type elemType = shapedType.getElementType();
+          const llvm::DataLayout &llvmDataLayout =
+              moduleTranslation.getLLVMModule()->getDataLayout();
+          llvm::Type *llvmElemTy = moduleTranslation.convertType(elemType);
+
+          uint64_t elemByteSize = 1;
+          if (llvmElemTy && llvmElemTy->isSized()) {
+            llvm::TypeSize typeSize =
+                llvmDataLayout.getTypeAllocSize(llvmElemTy);
+            if (!typeSize.isScalable())
+              elemByteSize = typeSize.getFixedValue();
+          }
+
+          dataSize = builder.getInt64(numElements * elemByteSize);
+        }
+      }
+    }
+
+    // If varType didn't work, try varPtr's type.
+    if (!dataSize) {
+      mlir::Type varPtrType = varPtr.getType();
+      if (mlir::isa<mlir::acc::MappableType>(varPtrType)) {
+        std::optional<mlir::DataLayout> optDataLayout =
+            mlir::acc::getDataLayout(dataOp);
+        if (optDataLayout) {
+          auto mappableType = mlir::cast<mlir::acc::MappableType>(varPtrType);
+          auto optSize = mappableType.getSizeInBytes(varPtr, /*accBounds=*/{},
+                                                     *optDataLayout);
+          if (optSize.has_value() && !optSize->isScalable()) {
+            dataSize = builder.getInt64(optSize->getFixedValue());
+          }
+        }
+      }
+    }
+
+    // If still no size, try MemRefType or ShapedType as fallback.
+    if (!dataSize && varType) {
+      // Try to compute size from the MLIR type.
+      // First, try MemRefType (common in MLIR).
+      if (auto memrefType = mlir::dyn_cast<MemRefType>(varType)) {
+        // For memref with static shape, compute total size.
+        if (memrefType.hasStaticShape()) {
+          // Use ShapedType's getNumElements() to compute element count.
+          int64_t numElements = memrefType.getNumElements();
+
+          // Get element type size.
+          mlir::Type elemType = memrefType.getElementType();
+          const llvm::DataLayout &llvmDataLayout =
+              moduleTranslation.getLLVMModule()->getDataLayout();
+          llvm::Type *llvmElemTy = moduleTranslation.convertType(elemType);
+
+          uint64_t elemByteSize = 1;
+          if (llvmElemTy && llvmElemTy->isSized()) {
+            llvm::TypeSize typeSize =
+                llvmDataLayout.getTypeAllocSize(llvmElemTy);
+            if (!typeSize.isScalable())
+              elemByteSize = typeSize.getFixedValue();
+          }
+
+          dataSize = builder.getInt64(numElements * elemByteSize);
+        }
+      } else {
+        // For other types (e.g., FIR types), check if it's an array type.
+        // Try to extract shape information from the type.
+        if (auto shapedType = mlir::dyn_cast<mlir::ShapedType>(varType)) {
+          if (shapedType.hasStaticShape()) {
+            int64_t numElements = shapedType.getNumElements();
+
+            // Get element type size.
+            mlir::Type elemType = shapedType.getElementType();
+            const llvm::DataLayout &llvmDataLayout =
+                moduleTranslation.getLLVMModule()->getDataLayout();
+            llvm::Type *llvmElemTy = moduleTranslation.convertType(elemType);
+
+            uint64_t elemByteSize = 1;
+            if (llvmElemTy && llvmElemTy->isSized()) {
+              llvm::TypeSize typeSize =
+                  llvmDataLayout.getTypeAllocSize(llvmElemTy);
+              if (!typeSize.isScalable())
+                elemByteSize = typeSize.getFixedValue();
+            }
+
+            dataSize = builder.getInt64(numElements * elemByteSize);
+          }
+        }
+      }
+    }
+
+    // Fallback to pointer size if we couldn't compute from type.
+    if (!dataSize) {
+      dataSize = accBuilder->getSizeInBytes(dataValue);
+    }
+  }
+
   // Store base pointer. The runtime (accTargetDataBegin/accTargetDataEnd)
   // requires ArgBasePtr to be non-null if and only if the entry carries
   // PTR_AND_OBJ. Bounded array sections are mapped as ordinary contiguous
@@ -700,7 +876,8 @@ getBoundedMappingPointer(Operation *entry, llvm::Value *dataValue,
   mlir::Type varType;
   TypeSwitch<Operation *>(entry)
       .Case<acc::CopyinOp, acc::CreateOp, acc::CopyoutOp, acc::PresentOp,
-            acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp>(
+            acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp,
+            acc::GetDevicePtrOp>(
           [&](auto op) { varType = op.getVarType(); });
   llvm::Type *elementType =
       varType ? moduleTranslation.convertType(varType) : nullptr;
@@ -863,6 +1040,49 @@ processDataOperands(llvm::IRBuilderBase &builder,
                              nbTotalOperands,
                              finalizeFlag | kAccMapTypePtrAndObj,
                              flags, names, index, mapperAllocas)))
+    return failure();
+
+  return success();
+}
+
+/// Process data operands from acc::UpdateOp.
+static LogicalResult
+processDataOperands(llvm::IRBuilderBase &builder,
+                    LLVM::ModuleTranslation &moduleTranslation,
+                    acc::UpdateOp op, SmallVector<uint64_t> &flags,
+                    SmallVectorImpl<llvm::Constant *> &names,
+                    struct OpenACCIRBuilder::MapperAllocas &mapperAllocas) {
+  unsigned index = 0;
+  llvm::SmallVector<mlir::Value> from, to;
+
+  for (mlir::Value dataOp : op.getDataClauseOperands()) {
+    if (auto getDevicePtrOp = dataOp.getDefiningOp<acc::GetDevicePtrOp>())
+      from.push_back(getDevicePtrOp.getVarPtr());
+    else if (auto updateHostOp = dataOp.getDefiningOp<acc::UpdateHostOp>())
+      from.push_back(updateHostOp.getVarPtr());
+    else if (auto updateDeviceOp =
+                 dataOp.getDefiningOp<acc::UpdateDeviceOp>())
+      to.push_back(updateDeviceOp.getVarPtr());
+    else
+      return op.emitError()
+             << "expected update data operand to be produced by "
+                "acc.getdeviceptr, acc.update_host, or acc.update_device";
+  }
+
+  unsigned totalNbOperand = from.size() + to.size();
+  // The runtime only skips the update of arguments that are not present on
+  // the device when the if_present maptype bit is set; without it, it
+  // terminates.
+  uint64_t flag = kAccMapTypePtrAndObj;
+  if (op.getIfPresent())
+    flag |= kAccMapTypeIfPresent;
+  if (failed(processOperands(
+          builder, moduleTranslation, op, from, totalNbOperand,
+          flag | kAccMapTypeFrom, flags, names, index, mapperAllocas)))
+    return failure();
+  if (failed(processOperands(
+          builder, moduleTranslation, op, to, totalNbOperand,
+          flag | kAccMapTypeTo, flags, names, index, mapperAllocas)))
     return failure();
 
   return success();
@@ -1121,8 +1341,8 @@ static LogicalResult convertDataOp(acc::DataOp &op,
   // Prepare arguments for ACC runtime calls.
   auto *nullPtr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
 
-  // The data construct defaults to acc_device_none (all device types).
-  llvm::Value *deviceType = builder.getInt64(0);
+  // The data construct defaults to acc_device_default.
+  llvm::Value *deviceType = builder.getInt64(1);
 
   // TODO: Lower the default clause into the runtime flags parameter.
   llvm::Value *flagsVal = builder.getInt64(0);
@@ -1330,7 +1550,7 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
   auto *nullPtr =
       llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
   auto *flagsVal = builder.getInt64(0);
-  auto *deviceTypeVal = builder.getInt64(0);
+  auto *deviceTypeVal = builder.getInt64(1);
   auto *argNumVal = builder.getInt32(totalNbOperand);
 
   // Get async value based on operation type
@@ -1426,6 +1646,138 @@ convertStandaloneDataOp(OpTy &op, llvm::IRBuilderBase &builder,
     }
   } else {
     emitCall();
+  }
+
+  return success();
+}
+
+/// Converts an OpenACC update operation into LLVM IR.
+static LogicalResult
+convertUpdateOp(acc::UpdateOp op, llvm::IRBuilderBase &builder,
+                LLVM::ModuleTranslation &moduleTranslation) {
+  auto enclosingFuncOp = op.getOperation()->getParentOfType<LLVM::LLVMFuncOp>();
+  llvm::Function *enclosingFunction =
+      moduleTranslation.lookupFunction(enclosingFuncOp.getName());
+  OpenACCIRBuilder *accBuilder = moduleTranslation.getOpenMPBuilder();
+  llvm::Module *module = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &ctx = builder.getContext();
+
+  unsigned totalNbOperand = op.getNumDataOperands();
+  OpenACCIRBuilder::MapperAllocas mapperAllocas;
+  OpenACCIRBuilder::InsertPointTy allocaIP(
+      &enclosingFunction->getEntryBlock(),
+      enclosingFunction->getEntryBlock().getFirstInsertionPt());
+  accBuilder->createMapperAllocas(builder.saveIP(), allocaIP, totalNbOperand,
+                                  mapperAllocas);
+
+  SmallVector<uint64_t> flags;
+  SmallVector<llvm::Constant *> names;
+  if (failed(processDataOperands(builder, moduleTranslation, op, flags, names,
+                                 mapperAllocas)))
+    return failure();
+
+  auto *maptypes =
+      accBuilder->createOffloadMaptypes(flags, ".offload_maptypes_update");
+  auto *maptypesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), totalNbOperand),
+      maptypes, 0, 0);
+  auto *mapnames =
+      accBuilder->createOffloadMapnames(names, ".offload_mapnames_update");
+  auto *mapnamesArg = builder.CreateConstInBoundsGEP2_32(
+      llvm::ArrayType::get(llvm::PointerType::getUnqual(ctx), totalNbOperand),
+      mapnames, 0, 0);
+  auto *nullPtr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx));
+
+  llvm::Value *asyncVal = builder.getInt64(-1);
+  // Only the async and wait values of DeviceType::None are translated;
+  // device_type specific values are silently dropped for now.
+  // TODO: support device_type specific async and wait values.
+  if (mlir::Value asyncValue = op.getAsyncValue()) {
+    asyncVal = moduleTranslation.lookupValue(asyncValue);
+    if (!asyncVal) {
+      op.emitError("could not find LLVM value for async operand");
+      return failure();
+    }
+    if (!asyncVal->getType()->isIntegerTy(64))
+      asyncVal = builder.CreateIntCast(asyncVal, builder.getInt64Ty(), true);
+  } else if (op.hasAsyncOnly()) {
+    asyncVal = builder.getInt64(-2);
+  }
+
+  auto emitUpdate = [&]() -> LogicalResult {
+    if (!op.getWaitValues().empty() || op.hasWaitOnly()) {
+      uint32_t waitNum = op.getWaitValues().size();
+      llvm::Value *waitList = nullPtr;
+      if (waitNum) {
+        auto *arrayType =
+            llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx), waitNum);
+        waitList = builder.CreateAlloca(arrayType);
+        for (auto [waitIndex, waitOperand] :
+             llvm::enumerate(op.getWaitValues())) {
+          llvm::Value *waitValue = moduleTranslation.lookupValue(waitOperand);
+          if (!waitValue) {
+            op.emitError("could not find LLVM value for wait operand")
+                << waitIndex;
+            return failure();
+          }
+          if (!waitValue->getType()->isIntegerTy(64))
+            waitValue =
+                builder.CreateIntCast(waitValue, builder.getInt64Ty(), true);
+          auto *element = builder.CreateInBoundsGEP(
+              arrayType, waitList,
+              {builder.getInt32(0), builder.getInt32(waitIndex)});
+          builder.CreateStore(waitValue, element);
+        }
+      }
+
+      llvm::Value *waitDevnum = builder.getInt32(-1);
+      if (mlir::Value devnumValue = op.getWaitDevnum()) {
+        waitDevnum = moduleTranslation.lookupValue(devnumValue);
+        if (!waitDevnum) {
+          op.emitError("could not find LLVM value for wait device number");
+          return failure();
+        }
+        if (!waitDevnum->getType()->isIntegerTy(32))
+          waitDevnum =
+              builder.CreateIntCast(waitDevnum, builder.getInt32Ty(), true);
+      }
+
+      builder.CreateCall(
+          getAccWaitFunction(*module, ctx),
+          {createSourceLocationInfo(*accBuilder, op), builder.getInt64(0),
+           builder.getInt64(1), waitDevnum, builder.getInt32(waitNum), waitList,
+           asyncVal});
+    }
+
+    builder.CreateCall(
+        getAccDataUpdateFunction(*module, ctx),
+        {createSourceLocationInfo(*accBuilder, op), builder.getInt64(0),
+         builder.getInt64(1), builder.getInt32(totalNbOperand),
+         mapperAllocas.ArgsBase, mapperAllocas.Args, mapperAllocas.ArgSizes,
+         maptypesArg, mapnamesArg, nullPtr, nullPtr, asyncVal});
+    return success();
+  };
+
+  if (op.getIfCond()) {
+    llvm::Value *cond = moduleTranslation.lookupValue(op.getIfCond());
+    if (!cond) {
+      op.emitError("could not find LLVM value for if condition");
+      return failure();
+    }
+    llvm::Function *function = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock *thenBlock =
+        llvm::BasicBlock::Create(ctx, "acc.update.then", function);
+    llvm::BasicBlock *endBlock =
+        llvm::BasicBlock::Create(ctx, "acc.update.end", function);
+    builder.CreateCondBr(cond, thenBlock, endBlock);
+    builder.SetInsertPoint(thenBlock);
+    if (failed(emitUpdate()))
+      return failure();
+    builder.CreateBr(endBlock);
+    builder.SetInsertPoint(endBlock);
+  } else if (failed(emitUpdate())) {
+    return failure();
   }
 
   return success();
@@ -1754,7 +2106,7 @@ convertDeclareEnterOp(acc::DeclareEnterOp op, llvm::IRBuilderBase &builder,
         clause == acc::DataClause::acc_getdeviceptr)
       continue;
 
-    uint64_t flag = kAccMapTypePtrAndObj;
+    uint64_t flag = kAccMapTypeNone;
     switch (clause) {
     case acc::DataClause::acc_copy:
     case acc::DataClause::acc_copyin:
@@ -1850,11 +2202,11 @@ convertDeclareExitOp(acc::DeclareExitOp op, llvm::IRBuilderBase &builder,
       for (OpOperand &use : accPtr.getUses()) {
         if (isa<acc::CopyoutOp>(use.getOwner())) {
           mappings.push_back(
-              {entry, varPtr, kAccMapTypeFrom | kAccMapTypePtrAndObj});
+              {entry, varPtr, kAccMapTypeFrom});
           hasAction = true;
         } else if (isa<acc::DeleteOp, acc::DetachOp>(use.getOwner())) {
           mappings.push_back(
-              {entry, varPtr, kAccMapTypeFinalize | kAccMapTypePtrAndObj});
+              {entry, varPtr, kAccMapTypeFinalize});
           hasAction = true;
         }
       }
@@ -1867,12 +2219,12 @@ convertDeclareExitOp(acc::DeclareExitOp op, llvm::IRBuilderBase &builder,
     case acc::DataClause::acc_copyout:
     case acc::DataClause::acc_copyout_zero:
       mappings.push_back(
-          {entry, varPtr, kAccMapTypeFrom | kAccMapTypePtrAndObj});
+          {entry, varPtr, kAccMapTypeFrom});
       break;
     case acc::DataClause::acc_present:
       mappings.push_back(
           {entry, varPtr,
-           kAccMapTypePresent | kAccMapTypeNoCreate | kAccMapTypePtrAndObj});
+           kAccMapTypePresent | kAccMapTypeNoCreate});
       break;
     case acc::DataClause::acc_copyin:
     case acc::DataClause::acc_copyin_readonly:
@@ -1880,7 +2232,7 @@ convertDeclareExitOp(acc::DeclareExitOp op, llvm::IRBuilderBase &builder,
     case acc::DataClause::acc_create_zero:
     case acc::DataClause::acc_declare_device_resident:
       mappings.push_back(
-          {entry, varPtr, kAccMapTypeFinalize | kAccMapTypePtrAndObj});
+          {entry, varPtr, kAccMapTypeFinalize});
       break;
     default:
       return op.emitError("unsupported data clause on declare_exit");
@@ -1970,8 +2322,8 @@ convertDeclareOp(acc::DeclareOp op, llvm::IRBuilderBase &builder,
         *clause == acc::DataClause::acc_declare_link)
       continue;
 
-    uint64_t entryFlag = kAccMapTypePtrAndObj;
-    uint64_t exitFlag = kAccMapTypeFinalize | kAccMapTypePtrAndObj;
+    uint64_t entryFlag = kAccMapTypeNone;
+    uint64_t exitFlag = kAccMapTypeFinalize;
     switch (*clause) {
     case acc::DataClause::acc_copy:
     case acc::DataClause::acc_copyin:
@@ -1980,12 +2332,12 @@ convertDeclareOp(acc::DeclareOp op, llvm::IRBuilderBase &builder,
       break;
     case acc::DataClause::acc_copyout:
     case acc::DataClause::acc_copyout_zero:
-      exitFlag = kAccMapTypeFrom | kAccMapTypePtrAndObj;
+      exitFlag = kAccMapTypeFrom;
       break;
     case acc::DataClause::acc_present:
       entryFlag |= kAccMapTypePresent | kAccMapTypeNoCreate;
       exitFlag =
-          kAccMapTypePresent | kAccMapTypeNoCreate | kAccMapTypePtrAndObj;
+          kAccMapTypePresent | kAccMapTypeNoCreate;
       break;
     case acc::DataClause::acc_declare_device_resident:
       entryFlag |= kAccMapTypeDeviceResident;
@@ -2143,10 +2495,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
                                                         moduleTranslation);
       })
       .Case([&](acc::UpdateOp updateOp) {
-        // TODO: lower acc.update to __tgt_acc_data_update.
-        return updateOp.emitError(
-                   "acc.update lowering to LLVM IR is not supported yet"),
-               failure();
+        return convertUpdateOp(updateOp, builder, moduleTranslation);
       })
       .Case([&](acc::InitOp initOp) {
         return convertInitOp(initOp, builder, moduleTranslation);
@@ -2232,7 +2581,8 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       })
       .Case<acc::CreateOp, acc::CopyinOp, acc::CopyoutOp, acc::PresentOp,
             acc::NoCreateOp, acc::DevicePtrOp, acc::AttachOp,
-            acc::DeclareDeviceResidentOp, acc::DeclareLinkOp>([&](auto op) {
+            acc::DeclareDeviceResidentOp, acc::DeclareLinkOp,
+            acc::GetDevicePtrOp>([&](auto op) {
         llvm::Value *varPtr = moduleTranslation.lookupValue(op.getVarPtr());
         if (!varPtr) {
           op.emitError("could not find LLVM value for varPtr");
@@ -2247,7 +2597,7 @@ LogicalResult OpenACCDialectLLVMIRTranslationInterface::convertOperation(
       .Case<acc::UseDeviceOp>([&](acc::UseDeviceOp op) {
         return convertUseDeviceOp(op, builder, moduleTranslation);
       })
-      .Case<acc::DeleteOp, acc::DetachOp, acc::GetDevicePtrOp>(
+      .Case<acc::DeleteOp, acc::DetachOp>(
           [](auto op) { return success(); })
       .Default([&](Operation *op) {
         return op->emitError("unsupported OpenACC operation: ")

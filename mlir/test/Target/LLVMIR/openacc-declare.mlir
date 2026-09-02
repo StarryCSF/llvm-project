@@ -196,3 +196,41 @@ llvm.func @declare_device_resident_with_bounds(%a: !llvm.ptr, %lb: i64, %extent:
   acc.declare_enter dataOperands(%1 : !llvm.ptr)
   llvm.return
 }
+
+//===----------------------------------------------------------------------===//
+// Global variable declare - acc.global_ctor/dtor translation
+//===----------------------------------------------------------------------===//
+
+// Test global variable with acc.declare attribute and ctor/dtor functions.
+// This models the OpenACC declare directive on module-level variables.
+// Note: acc.global_ctor/dtor are converted to llvm.func by ACCDeclareCtorDtorConversion
+// pass before this translation stage.
+llvm.mlir.global external @global_arr() {acc.declare = #acc.declare<dataClause = acc_create>} : !llvm.array<10 x i32> {
+  %0 = llvm.mlir.zero : !llvm.array<10 x i32>
+  llvm.return %0 : !llvm.array<10 x i32>
+}
+
+// acc.global_ctor is converted to llvm.func by ACCDeclareCtorDtorConversion pass.
+// Here we test the translation of the converted ctor function.
+// CHECK-LABEL: define internal void @global_arr_acc_ctor
+// CHECK: call void @__tgt_acc_declare
+// CHECK: ret void
+llvm.func internal @global_arr_acc_ctor() {
+  %0 = llvm.mlir.addressof @global_arr {acc.declare = #acc.declare<dataClause = acc_create>} : !llvm.ptr
+  %1 = acc.create varPtr(%0 : !llvm.ptr) varType(!llvm.array<10 x i32>) -> !llvm.ptr
+  acc.declare_enter dataOperands(%1 : !llvm.ptr)
+  llvm.return
+}
+
+// acc.global_dtor is converted to llvm.func by ACCDeclareCtorDtorConversion pass.
+// Here we test the translation of the converted dtor function.
+// CHECK-LABEL: define internal void @global_arr_acc_dtor
+// CHECK: call void @__tgt_acc_data_end
+// CHECK: ret void
+llvm.func internal @global_arr_acc_dtor() {
+  %0 = llvm.mlir.addressof @global_arr {acc.declare = #acc.declare<dataClause = acc_create>} : !llvm.ptr
+  %1 = acc.getdeviceptr varPtr(%0 : !llvm.ptr) varType(!llvm.array<10 x i32>) -> !llvm.ptr {dataClause = #acc<data_clause acc_create>}
+  acc.declare_exit dataOperands(%1 : !llvm.ptr)
+  acc.delete accPtr(%1 : !llvm.ptr)
+  llvm.return
+}
