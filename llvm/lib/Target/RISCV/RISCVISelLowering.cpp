@@ -12332,6 +12332,30 @@ static unsigned getRVPMulHighAccumulateOpcode(unsigned IntNo) {
   }
 }
 
+static unsigned getRVPMulPartsAccumulateOpcode(unsigned IntNo) {
+  switch (IntNo) {
+  default:
+    llvm_unreachable(
+        "Unexpected RISC-V packed multiply parts accumulate intrinsic");
+  case Intrinsic::riscv_pmacc_h00:
+    return RISCVISD::MACC_H00;
+  case Intrinsic::riscv_pmacc_h01:
+    return RISCVISD::MACC_H01;
+  case Intrinsic::riscv_pmacc_h11:
+    return RISCVISD::MACC_H11;
+  case Intrinsic::riscv_pmaccu_h00:
+    return RISCVISD::MACCU_H00;
+  case Intrinsic::riscv_pmaccu_h01:
+    return RISCVISD::MACCU_H01;
+  case Intrinsic::riscv_pmaccu_h11:
+    return RISCVISD::MACCU_H11;
+  case Intrinsic::riscv_pmaccsu_h00:
+    return RISCVISD::MACCSU_H00;
+  case Intrinsic::riscv_pmaccsu_h11:
+    return RISCVISD::MACCSU_H11;
+  }
+}
+
 static unsigned getRVPQFormatAccScalarOpcode(Intrinsic::ID IntNo) {
   switch (IntNo) {
   default:
@@ -13038,6 +13062,35 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     }
 
     return DAG.getNode(MulOpc, DL, VT, Rd, Rs1, Rs2);
+  }
+  case Intrinsic::riscv_pmacc_h00:
+  case Intrinsic::riscv_pmacc_h01:
+  case Intrinsic::riscv_pmacc_h11:
+  case Intrinsic::riscv_pmaccu_h00:
+  case Intrinsic::riscv_pmaccu_h01:
+  case Intrinsic::riscv_pmaccu_h11:
+  case Intrinsic::riscv_pmaccsu_h00:
+  case Intrinsic::riscv_pmaccsu_h11: {
+    EVT VT = Op.getValueType();
+    unsigned Opc = getRVPMulPartsAccumulateOpcode(IntNo);
+    SDValue Rd = Op.getOperand(1);
+    SDValue Rs1 = Op.getOperand(2);
+    SDValue Rs2 = Op.getOperand(3);
+
+    // RV32 has no 64-bit packed form: split into two scalar operations, each
+    // accumulating one word of the result.
+    if (!Subtarget.is64Bit() && VT == MVT::v2i32) {
+      auto Extract = [&](SDValue V, unsigned Idx) {
+        return DAG.getExtractVectorElt(DL, MVT::i32, V, Idx);
+      };
+      auto [Rs1Lo, Rs1Hi] = DAG.SplitVector(Rs1, DL);
+      auto [Rs2Lo, Rs2Hi] = DAG.SplitVector(Rs2, DL);
+      SDValue Lo = DAG.getNode(Opc, DL, MVT::i32, Extract(Rd, 0), Rs1Lo, Rs2Lo);
+      SDValue Hi = DAG.getNode(Opc, DL, MVT::i32, Extract(Rd, 1), Rs1Hi, Rs2Hi);
+      return DAG.getNode(ISD::BUILD_VECTOR, DL, VT, Lo, Hi);
+    }
+
+    return DAG.getNode(Opc, DL, VT, Rd, Rs1, Rs2);
   }
   case Intrinsic::riscv_pm4add:
   case Intrinsic::riscv_pm2add:

@@ -2906,6 +2906,63 @@ int32x2_t test_pmhraccsu_i32x2(int32x2_t rd, int32x2_t rs1, uint32x2_t rs2) {
   return __riscv_pmhraccsu_i32x2(rd, rs1, rs2);
 }
 
+// Packed Multiply Parts Accumulate (64-bit)
+// CHECK-LABEL: test_pmacc_h00_i32x2:
+// RV32-COUNT-2: macc.h00
+// RV64:         pmacc.w.h00
+int32x2_t test_pmacc_h00_i32x2(int32x2_t rd, int16x4_t rs1, int16x4_t rs2) {
+  return __riscv_pmacc_h00_i32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmacc_h01_i32x2:
+// RV32-COUNT-2: macc.h01
+// RV64:         pmacc.w.h01
+int32x2_t test_pmacc_h01_i32x2(int32x2_t rd, int16x4_t rs1, int16x4_t rs2) {
+  return __riscv_pmacc_h01_i32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmacc_h11_i32x2:
+// RV32-COUNT-2: macc.h11
+// RV64:         pmacc.w.h11
+int32x2_t test_pmacc_h11_i32x2(int32x2_t rd, int16x4_t rs1, int16x4_t rs2) {
+  return __riscv_pmacc_h11_i32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmaccu_h00_u32x2:
+// RV32-COUNT-2: maccu.h00
+// RV64:         pmaccu.w.h00
+uint32x2_t test_pmaccu_h00_u32x2(uint32x2_t rd, uint16x4_t rs1, uint16x4_t rs2) {
+  return __riscv_pmaccu_h00_u32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmaccu_h01_u32x2:
+// RV32-COUNT-2: maccu.h01
+// RV64:         pmaccu.w.h01
+uint32x2_t test_pmaccu_h01_u32x2(uint32x2_t rd, uint16x4_t rs1, uint16x4_t rs2) {
+  return __riscv_pmaccu_h01_u32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmaccu_h11_u32x2:
+// RV32-COUNT-2: maccu.h11
+// RV64:         pmaccu.w.h11
+uint32x2_t test_pmaccu_h11_u32x2(uint32x2_t rd, uint16x4_t rs1, uint16x4_t rs2) {
+  return __riscv_pmaccu_h11_u32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmaccsu_h00_i32x2:
+// RV32-COUNT-2: maccsu.h00
+// RV64:         pmaccsu.w.h00
+int32x2_t test_pmaccsu_h00_i32x2(int32x2_t rd, int16x4_t rs1, uint16x4_t rs2) {
+  return __riscv_pmaccsu_h00_i32x2(rd, rs1, rs2);
+}
+
+// CHECK-LABEL: test_pmaccsu_h11_i32x2:
+// RV32-COUNT-2: maccsu.h11
+// RV64:         pmaccsu.w.h11
+int32x2_t test_pmaccsu_h11_i32x2(int32x2_t rd, int16x4_t rs1, uint16x4_t rs2) {
+  return __riscv_pmaccsu_h11_i32x2(rd, rs1, rs2);
+}
+
 // CHECK-LABEL: test_prev_i8x4:
 // CHECK:       rev8
 int8x4_t test_prev_i8x4(int8x4_t a) { return __riscv_prev_i8x4(a); }

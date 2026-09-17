@@ -2136,6 +2136,53 @@ class RVPBinaryIntrinsic
   def int_riscv_pmhaccsu  : RVPTernaryIntrinsic;
   def int_riscv_pmhraccsu : RVPTernaryIntrinsic;
 
+  // Packed Multiply Parts Accumulate. The packed form is RV64 only; on
+  // RV32 the intrinsic is lowered to a pair of scalar macc/maccu/maccsu
+  // operations.
+  // These multiply selected halves and accumulate.
+  // Result is v2i32, inputs are v4i16 (2x elements)
+  def int_riscv_pmacc_h00
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmacc_h01
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmacc_h11
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmaccu_h00
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmaccu_h01
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmaccu_h11
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  // Mixed signedness versions - third operand is unsigned
+  def int_riscv_pmaccsu_h00
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmaccsu_h11
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+
   // Packed Multiplication with Horizontal Addition.
   class RVPHorizontalMulIntrinsic
       : DefaultAttrsIntrinsic<[llvm_any_ty],

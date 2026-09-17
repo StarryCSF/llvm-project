@@ -829,6 +829,16 @@ __packed_ternary_builtin_mixed(pmhaccsu_i32x2, int32x2_t, int32x2_t, uint32x2_t,
 __packed_ternary_builtin_mixed(pmhraccsu_i16x4, int16x4_t, int16x4_t, uint16x4_t, __builtin_riscv_pmhraccsu_i16x4)
 __packed_ternary_builtin_mixed(pmhraccsu_i32x2, int32x2_t, int32x2_t, uint32x2_t, __builtin_riscv_pmhraccsu_i32x2)
 
+/* Packed Multiply Parts Accumulate (64-bit) */
+__packed_ternary_builtin(pmacc_h00_i32x2, int32x2_t, __builtin_riscv_pmacc_h00_i32x2)
+__packed_ternary_builtin(pmacc_h01_i32x2, int32x2_t, __builtin_riscv_pmacc_h01_i32x2)
+__packed_ternary_builtin(pmacc_h11_i32x2, int32x2_t, __builtin_riscv_pmacc_h11_i32x2)
+__packed_ternary_builtin(pmaccu_h00_u32x2, uint32x2_t, __builtin_riscv_pmaccu_h00_u32x2)
+__packed_ternary_builtin(pmaccu_h01_u32x2, uint32x2_t, __builtin_riscv_pmaccu_h01_u32x2)
+__packed_ternary_builtin(pmaccu_h11_u32x2, uint32x2_t, __builtin_riscv_pmaccu_h11_u32x2)
+__packed_ternary_builtin_mixed(pmaccsu_h00_i32x2, int32x2_t, int16x4_t, uint16x4_t, __builtin_riscv_pmaccsu_h00_i32x2)
+__packed_ternary_builtin_mixed(pmaccsu_h11_i32x2, int32x2_t, int16x4_t, uint16x4_t, __builtin_riscv_pmaccsu_h11_i32x2)
+
 /* Packed Multiplication with Horizontal Addition (32-bit) */
 __packed_binary_builtin_mixed(pm4add_i8x4, int32_t, int8x4_t, int8x4_t, __builtin_riscv_pm4add_i8x4)
 __packed_binary_builtin_mixed(pm2add_i16x2, int32_t, int16x2_t, int16x2_t, __builtin_riscv_pm2add_i16x2)

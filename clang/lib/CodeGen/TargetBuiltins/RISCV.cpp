@@ -1297,6 +1297,15 @@ Value *CodeGenFunction::EmitRISCVBuiltinExpr(unsigned BuiltinID,
   case RISCV::BI__builtin_riscv_pmhraccsu_i16x2:
   case RISCV::BI__builtin_riscv_pmhraccsu_i16x4:
   case RISCV::BI__builtin_riscv_pmhraccsu_i32x2:
+  // Packed Multiply Parts Accumulate (64-bit)
+  case RISCV::BI__builtin_riscv_pmacc_h00_i32x2:
+  case RISCV::BI__builtin_riscv_pmacc_h01_i32x2:
+  case RISCV::BI__builtin_riscv_pmacc_h11_i32x2:
+  case RISCV::BI__builtin_riscv_pmaccu_h00_u32x2:
+  case RISCV::BI__builtin_riscv_pmaccu_h01_u32x2:
+  case RISCV::BI__builtin_riscv_pmaccu_h11_u32x2:
+  case RISCV::BI__builtin_riscv_pmaccsu_h00_i32x2:
+  case RISCV::BI__builtin_riscv_pmaccsu_h11_i32x2:
   // Packed Saturating Absolute Value
   case RISCV::BI__builtin_riscv_psabs_i8x4:
   case RISCV::BI__builtin_riscv_psabs_i16x2:
@@ -1473,6 +1482,31 @@ Value *CodeGenFunction::EmitRISCVBuiltinExpr(unsigned BuiltinID,
     case RISCV::BI__builtin_riscv_pmhraccsu_i16x4:
     case RISCV::BI__builtin_riscv_pmhraccsu_i32x2:
       ID = Intrinsic::riscv_pmhraccsu;
+      break;
+    // Packed Multiply Parts Accumulate (64-bit)
+    case RISCV::BI__builtin_riscv_pmacc_h00_i32x2:
+      ID = Intrinsic::riscv_pmacc_h00;
+      break;
+    case RISCV::BI__builtin_riscv_pmacc_h01_i32x2:
+      ID = Intrinsic::riscv_pmacc_h01;
+      break;
+    case RISCV::BI__builtin_riscv_pmacc_h11_i32x2:
+      ID = Intrinsic::riscv_pmacc_h11;
+      break;
+    case RISCV::BI__builtin_riscv_pmaccu_h00_u32x2:
+      ID = Intrinsic::riscv_pmaccu_h00;
+      break;
+    case RISCV::BI__builtin_riscv_pmaccu_h01_u32x2:
+      ID = Intrinsic::riscv_pmaccu_h01;
+      break;
+    case RISCV::BI__builtin_riscv_pmaccu_h11_u32x2:
+      ID = Intrinsic::riscv_pmaccu_h11;
+      break;
+    case RISCV::BI__builtin_riscv_pmaccsu_h00_i32x2:
+      ID = Intrinsic::riscv_pmaccsu_h00;
+      break;
+    case RISCV::BI__builtin_riscv_pmaccsu_h11_i32x2:
+      ID = Intrinsic::riscv_pmaccsu_h11;
       break;
     case RISCV::BI__builtin_riscv_psabs_i8x4:
     case RISCV::BI__builtin_riscv_psabs_i16x2:

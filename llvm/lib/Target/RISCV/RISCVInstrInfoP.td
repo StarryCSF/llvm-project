@@ -1971,6 +1971,21 @@ def riscv_mhraccu  : RVSDNode<"MHRACCU", SDT_RISCVSameTernary>;
 def riscv_mhaccsu  : RVSDNode<"MHACCSU", SDT_RISCVSameTernary>;
 def riscv_mhraccsu : RVSDNode<"MHRACCSU", SDT_RISCVSameTernary>;
 
+// Multiply parts accumulate operations. The packed form (RV64 only) has a
+// v2i32 result/accumulator with v4i16 sources; the scalar form (RV32)
+// accumulates one word of the result from v2i16 sources.
+def SDT_RISCVMulPartsTernary
+    : SDTypeProfile<1, 3, [SDTCisSameAs<0, 1>,
+                           SDTCisSameAs<2, 3>]>;
+def riscv_macc_h00  : RVSDNode<"MACC_H00", SDT_RISCVMulPartsTernary>;
+def riscv_macc_h01  : RVSDNode<"MACC_H01", SDT_RISCVMulPartsTernary>;
+def riscv_macc_h11  : RVSDNode<"MACC_H11", SDT_RISCVMulPartsTernary>;
+def riscv_maccu_h00 : RVSDNode<"MACCU_H00", SDT_RISCVMulPartsTernary>;
+def riscv_maccu_h01 : RVSDNode<"MACCU_H01", SDT_RISCVMulPartsTernary>;
+def riscv_maccu_h11 : RVSDNode<"MACCU_H11", SDT_RISCVMulPartsTernary>;
+def riscv_maccsu_h00 : RVSDNode<"MACCSU_H00", SDT_RISCVMulPartsTernary>;
+def riscv_maccsu_h11 : RVSDNode<"MACCSU_H11", SDT_RISCVMulPartsTernary>;
+
 // Multiply packed elements and horizontally combine each adjacent group.
 def SDT_RISCVHorizontalMul
     : SDTypeProfile<1, 2, [SDTCisVec<1>, SDTCisSameAs<1, 2>]>;
@@ -2936,6 +2951,33 @@ let append Predicates = [IsRV32] in {
   def : Pat<(XLenVT (riscv_mqracc_11 (XLenVT GPR:$rd),
                         (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
             (MQRACC_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+
+  // Packed multiply parts accumulate, scalar halfword (RV32). The packed
+  // intrinsic expands to a pair of these, one per result word.
+  def : Pat<(XLenVT (riscv_macc_h00 (XLenVT GPR:$rd),
+                        (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACC_H00 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_macc_h01 (XLenVT GPR:$rd),
+                        (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACC_H01 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_macc_h11 (XLenVT GPR:$rd),
+                        (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACC_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_maccu_h00 (XLenVT GPR:$rd),
+                         (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACCU_H00 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_maccu_h01 (XLenVT GPR:$rd),
+                         (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACCU_H01 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_maccu_h11 (XLenVT GPR:$rd),
+                         (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACCU_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_maccsu_h00 (XLenVT GPR:$rd),
+                          (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACCSU_H00 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(XLenVT (riscv_maccsu_h11 (XLenVT GPR:$rd),
+                          (v2i16 GPR:$rs1), (v2i16 GPR:$rs2))),
+            (MACCSU_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
 } // append Predicates = [IsRV32]
 
 let append Predicates = [IsRV64] in {
@@ -3167,6 +3209,24 @@ let append Predicates = [IsRV64] in {
             (PM2ADDU_H GPR:$rs1, GPR:$rs2)>;
   def : Pat<(v2i32 (riscv_pm2sub_h (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
             (PM2SUB_H GPR:$rs1, GPR:$rs2)>;
+
+  // Packed Multiply Parts Accumulate patterns (RV64 only)
+  def : Pat<(v2i32 (riscv_macc_h00 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACC_W_H00 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_macc_h01 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACC_W_H01 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_macc_h11 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACC_W_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_maccu_h00 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACCU_W_H00 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_maccu_h01 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACCU_W_H01 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_maccu_h11 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACCU_W_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_maccsu_h00 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACCSU_W_H00 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
+  def : Pat<(v2i32 (riscv_maccsu_h11 (v2i32 GPR:$rd), (v4i16 GPR:$rs1), (v4i16 GPR:$rs2))),
+            (PMACCSU_W_H11 GPR:$rd, GPR:$rs1, GPR:$rs2)>;
 
   // 32-bit logical shift left/right patterns
   def : PatGprImm<riscv_pshl, PSLLI_W, uimm5, v2i32>;
